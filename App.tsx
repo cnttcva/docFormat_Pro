@@ -7,7 +7,7 @@ import { ProcessingStatus, ProcessResult, DocxOptions, HeaderType, OrgInfo } fro
 import { 
   FileText, Download, RefreshCw, Sparkles, 
   FileCheck, ShieldCheck, Cpu, LayoutTemplate, 
-  Settings2, Zap, ArrowRight, SlidersHorizontal, ChevronDown, ChevronUp, CheckSquare, ListX, Settings, Database, LockKeyhole
+  Settings2, Zap, ArrowRight, SlidersHorizontal, ChevronDown, ChevronUp, CheckSquare, ListX, Settings, Database, LockKeyhole, Clock, Trash2, Send, AlertTriangle
 } from 'lucide-react';
 
 const hanhChinhSymbols = [
@@ -59,13 +59,26 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showOrgSettings, setShowOrgSettings] = useState(false);
   
+  // -- QUẢN LÝ BẢN QUYỀN ĐỘNG --
   const [orgInfo, setOrgInfo] = useState<OrgInfo | undefined>(() => {
     const saved = localStorage.getItem('docFormat_OrgInfo');
     return saved ? JSON.parse(saved) : undefined;
   });
 
-  const [isLocked, setIsLocked] = useState(!!orgInfo?.orgName);
+  const [pendingAuth, setPendingAuth] = useState<any>(() => {
+    const saved = localStorage.getItem('docFormat_PendingAuth');
+    return saved ? JSON.parse(saved) : undefined;
+  });
+
+  const [authStatus, setAuthStatus] = useState<'REGISTERED' | 'PENDING' | 'UNREGISTERED'>(() => {
+    if (localStorage.getItem('docFormat_OrgInfo')) return 'REGISTERED';
+    if (localStorage.getItem('docFormat_PendingAuth')) return 'PENDING';
+    return 'UNREGISTERED';
+  });
+
   const [unlockCode, setUnlockCode] = useState("");
+  // Thêm state này để thay thế cho window.confirm bị chặn
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const [orgFormValues, setOrgFormValues] = useState<{
       governingBody: string;
@@ -75,12 +88,12 @@ export default function App() {
       location: string;
       departments: string;
   }>({
-    governingBody: orgInfo?.governingBody || "",
-    orgName: orgInfo?.orgName || "",
-    partyUpper: orgInfo?.partyUpper || "",
-    partyCell: orgInfo?.partyCell || "",
-    location: orgInfo?.location || "",
-    departments: orgInfo?.departments ? orgInfo.departments.join(', ') : "",
+    governingBody: orgInfo?.governingBody || pendingAuth?.governingBody || "",
+    orgName: orgInfo?.orgName || pendingAuth?.orgName || "",
+    partyUpper: orgInfo?.partyUpper || pendingAuth?.partyUpper || "",
+    partyCell: orgInfo?.partyCell || pendingAuth?.partyCell || "",
+    location: orgInfo?.location || pendingAuth?.location || "",
+    departments: orgInfo?.departments ? orgInfo.departments.join(', ') : (pendingAuth?.departments || ""),
   });
   
   const todayStr = new Date().toISOString().split('T')[0];
@@ -149,45 +162,81 @@ export default function App() {
     setResult(null);
   };
 
-  const handleSaveOrgSettings = () => {
-    const departmentsArray = orgFormValues.departments
-        .split(',')
-        .map(d => d.trim())
-        .filter(d => d !== "");
+  const handleRegisterRequest = () => {
+    if (!orgFormValues.orgName.trim()) {
+        alert("Vui lòng nhập ít nhất Tên cơ quan/Trường học để đăng ký.");
+        return;
+    }
 
-    const newOrgInfo: OrgInfo = {
-        governingBody: orgFormValues.governingBody,
-        orgName: orgFormValues.orgName,
-        partyUpper: orgFormValues.partyUpper,
-        partyCell: orgFormValues.partyCell,
-        location: orgFormValues.location,
-        departments: departmentsArray
+    const code = "DOC-" + Math.random().toString(36).substring(2, 8).toUpperCase();
+    const payload = {
+        ...orgFormValues,
+        activationCode: code
     };
 
-    localStorage.setItem('docFormat_OrgInfo', JSON.stringify(newOrgInfo));
-    setOrgInfo(newOrgInfo);
-    setIsLocked(true);
-    setShowOrgSettings(false);
-    
-    // Khởi chạy hệ thống gửi báo cáo ngầm
+    localStorage.setItem('docFormat_PendingAuth', JSON.stringify(payload));
+    setPendingAuth(payload);
+    setAuthStatus('PENDING');
+
     const scriptUrl = "https://script.google.com/macros/s/AKfycbyDqki9BX9a-qoJfJ-E6WkBc4dSIKA2a_vTjcLZAFShbg0bm9IbOEsM__BbGplO1-CT/exec";
+    
+    // Đã thay đổi Content-Type thành text/plain để vượt qua bảo mật CORS của trình duyệt
     fetch(scriptUrl, {
         method: "POST",
         mode: "no-cors",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            governingBody: newOrgInfo.governingBody,
-            orgName: newOrgInfo.orgName,
-            partyUpper: newOrgInfo.partyUpper,
-            partyCell: newOrgInfo.partyCell,
-            location: newOrgInfo.location
-        })
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(payload)
     }).catch(err => console.log("Tracker err:", err));
-    
-    // Update current selected department if needed
-    if (departmentsArray.length > 0 && (!options.departmentName || !departmentsArray.includes(options.departmentName))) {
-        setOptions({...options, departmentName: departmentsArray[0]});
-    }
+  };
+
+  const handleActivate = () => {
+      if (unlockCode === pendingAuth?.activationCode) {
+          const departmentsArray = pendingAuth.departments
+              .split(',')
+              .map((d: string) => d.trim())
+              .filter((d: string) => d !== "");
+
+          const newOrgInfo: OrgInfo = {
+              governingBody: pendingAuth.governingBody,
+              orgName: pendingAuth.orgName,
+              partyUpper: pendingAuth.partyUpper,
+              partyCell: pendingAuth.partyCell,
+              location: pendingAuth.location,
+              departments: departmentsArray
+          };
+
+          localStorage.setItem('docFormat_OrgInfo', JSON.stringify(newOrgInfo));
+          localStorage.removeItem('docFormat_PendingAuth');
+          setOrgInfo(newOrgInfo);
+          setAuthStatus('REGISTERED');
+          setShowOrgSettings(false);
+          setUnlockCode("");
+
+          if (departmentsArray.length > 0 && (!options.departmentName || !departmentsArray.includes(options.departmentName))) {
+              setOptions({...options, departmentName: departmentsArray[0]});
+          }
+          alert("Kích hoạt bản quyền thành công!");
+      } else {
+          alert("Mã kích hoạt không hợp lệ. Vui lòng kiểm tra lại!");
+      }
+  };
+
+  const handleCancelRegistration = () => {
+      localStorage.removeItem('docFormat_PendingAuth');
+      setPendingAuth(undefined);
+      setAuthStatus('UNREGISTERED');
+      setUnlockCode("");
+  };
+
+  const handleRemoveLicense = () => {
+      localStorage.removeItem('docFormat_OrgInfo');
+      window.location.reload();
+  };
+
+  const closeModal = () => {
+      setShowOrgSettings(false);
+      setUnlockCode("");
+      setConfirmRemove(false);
   };
 
   return (
@@ -204,23 +253,25 @@ export default function App() {
             <div className="w-24"></div> {/* Spacer for centering */}
             <div className="flex items-center justify-center gap-2 text-xs font-bold tracking-widest uppercase flex-1">
               <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse"></span>
-              {orgInfo?.orgName || "TRƯỜNG THCS CHU VĂN AN"}
+              {orgInfo?.orgName || "CHƯA ĐĂNG KÝ BẢN QUYỀN"}
               <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse"></span>
             </div>
+            
             <button 
                 onClick={() => setShowOrgSettings(true)}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs transition-colors font-medium border whitespace-nowrap ${isLocked ? 'bg-amber-500/20 text-amber-200 border-amber-500/30 hover:bg-amber-500/30' : 'bg-white/10 hover:bg-white/20 border-white/20'}`}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs transition-colors font-medium border whitespace-nowrap 
+                  ${authStatus === 'REGISTERED' ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/30 hover:bg-emerald-500/30' : 
+                    authStatus === 'PENDING' ? 'bg-amber-500/20 text-amber-200 border-amber-500/30 hover:bg-amber-500/30' : 
+                    'bg-rose-500/20 text-rose-200 border-rose-500/30 hover:bg-rose-500/30'}`}
             >
-                {isLocked ? (
-                  <>
-                    <LockKeyhole className="w-3.5 h-3.5" /> 
-                    <span>Bản quyền: {orgInfo?.orgName}</span>
-                  </>
-                ) : (
-                  <>
-                    <Settings className="w-3.5 h-3.5" /> 
-                    <span>Cài đặt đơn vị</span>
-                  </>
+                {authStatus === 'REGISTERED' && (
+                  <><LockKeyhole className="w-3.5 h-3.5" /> <span>Bản quyền: {orgInfo?.orgName}</span></>
+                )}
+                {authStatus === 'PENDING' && (
+                  <><Clock className="w-3.5 h-3.5 animate-pulse" /> <span>Đang chờ kích hoạt...</span></>
+                )}
+                {authStatus === 'UNREGISTERED' && (
+                  <><Settings className="w-3.5 h-3.5" /> <span>Đăng ký bản quyền</span></>
                 )}
             </button>
         </div>
@@ -262,7 +313,23 @@ export default function App() {
           </p>
         </div>
 
+        {/* CẢNH BÁO NẾU CHƯA ĐĂNG KÝ */}
+        {authStatus !== 'REGISTERED' && (
+            <div className="mb-8 p-4 bg-rose-50 border-2 border-rose-200 rounded-2xl flex flex-col items-center justify-center text-center animate-pulse shadow-md">
+                <LockKeyhole className="w-8 h-8 text-rose-500 mb-2" />
+                <h3 className="font-bold text-rose-800">HỆ THỐNG ĐANG BỊ KHÓA</h3>
+                <p className="text-sm text-rose-600 mt-1 mb-3">Vui lòng đăng ký bản quyền đơn vị để mở khóa chức năng chuẩn hóa văn bản.</p>
+                <button 
+                    onClick={() => setShowOrgSettings(true)}
+                    className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-full text-sm font-bold shadow transition-colors"
+                >
+                    Đăng ký ngay
+                </button>
+            </div>
+        )}
+
         {/* Configuration Section */}
+        {authStatus === 'REGISTERED' && (
         <div className="mb-8">
             <button 
                 onClick={() => setShowSettings(!showSettings)}
@@ -590,9 +657,10 @@ export default function App() {
                 </div>
             )}
         </div>
+        )}
 
-        {/* Main Card */}
-        <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden relative group">
+        {/* Main Card (Only show if Registered) */}
+        <div className={`bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden relative group ${authStatus !== 'REGISTERED' ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500"></div>
 
           <div className="p-8 space-y-8">
@@ -604,7 +672,7 @@ export default function App() {
                   <span className="text-slate-500">Tải lên tài liệu</span>
                   <div className="h-px bg-slate-100 flex-grow"></div>
                 </div>
-                <Dropzone onFileSelect={handleFileSelect} disabled={isUploadDisabled} />
+                <Dropzone onFileSelect={handleFileSelect} disabled={isUploadDisabled || authStatus !== 'REGISTERED'} />
               </div>
             )}
 
@@ -727,18 +795,20 @@ export default function App() {
 
       {/* Organization Settings Modal */}
       {showOrgSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fadeIn">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-            <div className={`p-4 text-white flex items-center justify-between shrink-0 ${isLocked ? 'bg-amber-500' : 'bg-blue-600'}`}>
+            <div className={`p-4 text-white flex items-center justify-between shrink-0 
+              ${authStatus === 'REGISTERED' ? 'bg-emerald-600' : authStatus === 'PENDING' ? 'bg-amber-500' : 'bg-blue-600'}`}>
               <h3 className="font-bold flex items-center gap-2">
-                {isLocked ? <LockKeyhole className="w-5 h-5" /> : <Database className="w-5 h-5" />}
-                {isLocked ? 'Thông Tin Bản Quyền' : 'Cấu hình Đơn vị Hệ thống'}
+                {authStatus === 'REGISTERED' && <LockKeyhole className="w-5 h-5" />}
+                {authStatus === 'PENDING' && <Clock className="w-5 h-5" />}
+                {authStatus === 'UNREGISTERED' && <Database className="w-5 h-5" />}
+                
+                {authStatus === 'REGISTERED' ? 'Thông Tin Bản Quyền' : 
+                 authStatus === 'PENDING' ? 'Chờ Kích Hoạt Bản Quyền' : 'Đăng ký Đơn vị Hệ thống'}
               </h3>
               <button 
-                onClick={() => {
-                  setShowOrgSettings(false);
-                  setUnlockCode("");
-                }}
+                onClick={closeModal}
                 className="text-white/70 hover:text-white transition-colors"
               >
                 <ListX className="w-5 h-5" />
@@ -746,35 +816,91 @@ export default function App() {
             </div>
             
             <div className="p-6 space-y-4 overflow-y-auto">
-              {isLocked ? (
+              {/* STATE: REGISTERED */}
+              {authStatus === 'REGISTERED' && (
                 <div className="space-y-6">
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 text-amber-900 shadow-inner">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 text-emerald-900 shadow-inner">
                     <p className="font-medium mb-3 leading-relaxed">
-                      Phần mềm <strong>DocFormat Pro</strong> đã được đăng ký bản quyền sử dụng cho đơn vị: <strong className="text-amber-700 uppercase">{orgInfo?.orgName}</strong>.
+                      Phần mềm <strong>DocFormat Pro</strong> đã được đăng ký bản quyền sử dụng hợp lệ cho đơn vị: <strong className="text-emerald-700 uppercase">{orgInfo?.orgName}</strong>.
                     </p>
-                    <p className="text-sm mb-4">
-                      Để cấp phép sử dụng cho đơn vị khác, vui lòng nhập Mã kích hoạt (Activation Code) hoặc liên hệ tác giả:
-                    </p>
-                    <div className="bg-white/60 p-3 rounded-lg text-sm border border-amber-100/50 space-y-1">
+                    <div className="bg-white/60 p-3 rounded-lg text-sm border border-emerald-100/50 space-y-1">
+                      <p className="text-xs font-bold text-slate-500 uppercase mb-2">Hỗ trợ kỹ thuật:</p>
                       <p><strong>Tác giả:</strong> Lại Cao Đằng</p>
                       <p><strong>Điện thoại:</strong> 0973 225 722</p>
                       <p><strong>Email:</strong> laicaodang@thcscva.edu.vn</p>
                     </div>
                   </div>
+                  
+                  <div className="pt-4 border-t border-slate-100 flex justify-center">
+                    {!confirmRemove ? (
+                        <button 
+                            onClick={() => setConfirmRemove(true)}
+                            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors"
+                        >
+                            <Trash2 className="w-4 h-4" /> Gỡ bản quyền (Cài đặt lại)
+                        </button>
+                    ) : (
+                        <div className="flex flex-col items-center gap-3 w-full bg-rose-50 p-4 rounded-xl border border-rose-200 animate-fadeIn">
+                            <span className="text-sm font-bold text-rose-700 flex items-center gap-2">
+                                <AlertTriangle className="w-4 h-4" /> Chắc chắn gỡ bản quyền thiết bị này?
+                            </span>
+                            <div className="flex gap-3 w-full">
+                                <button 
+                                    onClick={() => setConfirmRemove(false)}
+                                    className="flex-1 py-2 text-sm font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors"
+                                >
+                                    Hủy
+                                </button>
+                                <button 
+                                    onClick={handleRemoveLicense}
+                                    className="flex-1 py-2 text-sm font-bold text-white bg-rose-600 rounded-lg hover:bg-rose-700 shadow-md transition-colors"
+                                >
+                                    Xác nhận gỡ
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* STATE: PENDING */}
+              {authStatus === 'PENDING' && (
+                  <div className="space-y-6">
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 text-amber-900 shadow-inner text-center">
+                    <Clock className="w-12 h-12 text-amber-400 mx-auto mb-3 animate-bounce" />
+                    <p className="font-medium mb-3 leading-relaxed">
+                      Yêu cầu đăng ký bản quyền cho <strong className="text-amber-700 uppercase">{pendingAuth?.orgName}</strong> đã được gửi thành công.
+                    </p>
+                    <p className="text-sm mb-4">
+                      Vui lòng liên hệ tác giả để nhận Mã kích hoạt phần mềm:
+                    </p>
+                    <div className="bg-white/60 p-3 rounded-lg text-sm border border-amber-100/50 space-y-1 text-left">
+                      <p><strong>Tác giả:</strong> Lại Cao Đằng</p>
+                      <p><strong>Điện thoại/Zalo:</strong> 0973 225 722</p>
+                      <p><strong>Email:</strong> laicaodang@thcscva.edu.vn</p>
+                    </div>
+                  </div>
 
                   <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-2">Nhập Mã Kích Hoạt</label>
+                    <label className="block text-sm font-bold text-slate-700 mb-2 text-center">NHẬP MÃ KÍCH HOẠT</label>
                     <input 
                       type="password" 
                       value={unlockCode}
                       onChange={(e) => setUnlockCode(e.target.value)}
-                      placeholder="••••••••••••"
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 tracking-widest text-center font-mono"
+                      placeholder="Nhập mã tác giả cung cấp..."
+                      className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 tracking-widest text-center font-mono"
                     />
                   </div>
                 </div>
-              ) : (
+              )}
+
+              {/* STATE: UNREGISTERED */}
+              {authStatus === 'UNREGISTERED' && (
                 <>
+                  <div className="bg-blue-50 text-blue-800 p-3 rounded-lg text-xs font-medium mb-4 border border-blue-100 shadow-inner">
+                      Vui lòng điền thông tin chính xác. Yêu cầu của bạn sẽ được gửi đến Tác giả để xét duyệt cấp mã kích hoạt.
+                  </div>
                   <div>
                     <label className="block text-sm font-bold text-slate-700 mb-1">Đơn vị chủ quản</label>
                     <input 
@@ -839,39 +965,52 @@ export default function App() {
               )}
             </div>
             
+            {/* ACTION BUTTONS */}
             <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3 shrink-0">
-              <button 
-                onClick={() => {
-                  setShowOrgSettings(false);
-                  setUnlockCode("");
-                }}
-                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"
-              >
-                {isLocked ? "Đóng" : "Hủy bỏ"}
-              </button>
               
-              {isLocked ? (
-                <button 
-                  onClick={() => {
-                    if (unlockCode === "Daklak@01062025#") {
-                      setIsLocked(false);
-                      setUnlockCode("");
-                    } else {
-                      alert("Mã kích hoạt không hợp lệ!");
-                    }
-                  }}
-                  className="px-6 py-2 bg-amber-500 hover:bg-amber-600 text-white text-sm font-bold rounded-lg shadow-md transition-colors flex items-center gap-2"
-                >
-                  <LockKeyhole className="w-4 h-4" /> Mở khóa
-                </button>
-              ) : (
-                <button 
-                  onClick={handleSaveOrgSettings}
-                  className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg shadow-md transition-colors"
-                >
-                  Lưu cài đặt
-                </button>
+              {authStatus === 'REGISTERED' && (
+                  <button 
+                      onClick={closeModal}
+                      className="px-6 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-bold rounded-lg transition-colors"
+                  >
+                      Đóng
+                  </button>
               )}
+
+              {authStatus === 'PENDING' && (
+                  <>
+                      <button 
+                          onClick={handleCancelRegistration}
+                          className="px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors"
+                      >
+                          Hủy yêu cầu
+                      </button>
+                      <button 
+                          onClick={handleActivate}
+                          className="px-6 py-2 bg-amber-500 hover:bg-amber-600 text-white text-sm font-bold rounded-lg shadow-md transition-colors flex items-center gap-2"
+                      >
+                          <LockKeyhole className="w-4 h-4" /> Kích hoạt phần mềm
+                      </button>
+                  </>
+              )}
+
+              {authStatus === 'UNREGISTERED' && (
+                  <>
+                      <button 
+                          onClick={closeModal}
+                          className="px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"
+                      >
+                          Hủy bỏ
+                      </button>
+                      <button 
+                          onClick={handleRegisterRequest}
+                          className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg shadow-md transition-colors flex items-center gap-2"
+                      >
+                          <Send className="w-4 h-4" /> Gửi yêu cầu đăng ký
+                      </button>
+                  </>
+              )}
+
             </div>
           </div>
         </div>
