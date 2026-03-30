@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocFormat Pro</title>
+    <link rel="manifest" href="/manifest.json" />
     <script src="https://cdn.tailwindcss.com"></script>
   <script type="importmap">
 {
@@ -17,6 +18,15 @@
 }
 </script>
 <link rel="stylesheet" href="/index.css">
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then(reg => console.log('Đã kích hoạt PWA thành công!', reg))
+            .catch(err => console.log('Lỗi kích hoạt PWA:', err));
+        });
+      }
+    </script>
 </head>
   <body>
     <div id="root"></div>

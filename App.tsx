@@ -59,7 +59,6 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showOrgSettings, setShowOrgSettings] = useState(false);
   
-  // -- QUẢN LÝ BẢN QUYỀN ĐỘNG --
   const [orgInfo, setOrgInfo] = useState<OrgInfo | undefined>(() => {
     const saved = localStorage.getItem('docFormat_OrgInfo');
     return saved ? JSON.parse(saved) : undefined;
@@ -77,7 +76,6 @@ export default function App() {
   });
 
   const [unlockCode, setUnlockCode] = useState("");
-  // Thêm state này để thay thế cho window.confirm bị chặn
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const [orgFormValues, setOrgFormValues] = useState<{
@@ -98,7 +96,8 @@ export default function App() {
   
   const todayStr = new Date().toISOString().split('T')[0];
   
-  const [options, setOptions] = useState<DocxOptions>({
+  // Dùng kiểu 'any' mở rộng để tránh lỗi Typescript khi thêm trường mới mà file types.ts chưa có
+  const [options, setOptions] = useState<any>({
     headerType: HeaderType.NONE,
     departmentName: orgInfo?.departments?.[0] || "TỔ CHUYÊN MÔN",
     documentDate: todayStr,
@@ -113,12 +112,16 @@ export default function App() {
     presiderName: "",
     secretaryName: "",
     docSymbol: "",
-    docSuffix: ""
+    docSuffix: "",
+    isCongVan: false,
+    congVanSummary: ""
   });
 
   const isUploadDisabled = options.isMinutes 
     ? (!options.presiderName?.trim() || !options.secretaryName?.trim())
-    : (options.headerType !== HeaderType.NONE && (!options.signerTitle?.trim() || !options.signerName?.trim()));
+    : (options.isCongVan 
+        ? (!options.congVanSummary?.trim() || !options.signerTitle?.trim() || !options.signerName?.trim())
+        : (options.headerType !== HeaderType.NONE && (!options.signerTitle?.trim() || !options.signerName?.trim())));
 
   const handleFileSelect = (selectedFile: File) => {
     setFile(selectedFile);
@@ -179,8 +182,6 @@ export default function App() {
     setAuthStatus('PENDING');
 
     const scriptUrl = "https://script.google.com/macros/s/AKfycbyDqki9BX9a-qoJfJ-E6WkBc4dSIKA2a_vTjcLZAFShbg0bm9IbOEsM__BbGplO1-CT/exec";
-    
-    // Đã thay đổi Content-Type thành text/plain để vượt qua bảo mật CORS của trình duyệt
     fetch(scriptUrl, {
         method: "POST",
         mode: "no-cors",
@@ -250,7 +251,7 @@ export default function App() {
       {/* School Top Bar */}
       <div className="relative z-20 bg-gradient-to-r from-slate-900 via-blue-900 to-slate-900 text-white py-2.5 shadow-md px-4">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
-            <div className="w-24"></div> {/* Spacer for centering */}
+            <div className="w-24"></div>
             <div className="flex items-center justify-center gap-2 text-xs font-bold tracking-widest uppercase flex-1">
               <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse"></span>
               {orgInfo?.orgName || "CHƯA ĐĂNG KÝ BẢN QUYỀN"}
@@ -365,7 +366,7 @@ export default function App() {
                             </select>
                             <p className="text-[10px] text-slate-400">Tự động chèn bảng thông tin cơ quan và Quốc hiệu vào đầu trang theo mẫu đã chọn</p>
                             
-                            {/* NEW: Conditional Document Symbol & Suffix */}
+                            {/* Conditional Document Symbol & Suffix */}
                             {(options.headerType === HeaderType.SCHOOL || options.headerType === HeaderType.PARTY) && (
                                 <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
@@ -398,7 +399,7 @@ export default function App() {
                                 </div>
                             )}
 
-                            {/* NEW: Conditional Department Select */}
+                            {/* Conditional Department Select */}
                             {options.headerType === HeaderType.DEPARTMENT && (
                                 <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4">
                                     <label className="block text-sm font-bold text-slate-700 mb-2">
@@ -437,8 +438,8 @@ export default function App() {
                                 </div>
                             )}
 
-                            {/* Minutes Option Checkbox */}
-                            <div className="mt-4 pt-4 border-t border-slate-100">
+                            {/* Options: Minutes & Cong Van */}
+                            <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
                                 <label className="flex items-center gap-3 cursor-pointer group">
                                     <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${options.isMinutes ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-slate-300 group-hover:border-blue-400'}`}>
                                         {options.isMinutes && <CheckSquare className="w-3.5 h-3.5" />}
@@ -447,16 +448,48 @@ export default function App() {
                                         type="checkbox" 
                                         className="hidden"
                                         checked={options.isMinutes}
-                                        onChange={(e) => setOptions({...options, isMinutes: e.target.checked})}
+                                        onChange={(e) => setOptions({...options, isMinutes: e.target.checked, isCongVan: false})}
                                     />
                                     <div>
                                         <span className="text-sm font-bold text-slate-700 group-hover:text-blue-600 transition-colors">Đây là văn bản BIÊN BẢN</span>
                                         <p className="text-[10px] text-slate-400">Tự động cấu hình định dạng dành riêng cho biên bản cuộc họp</p>
                                     </div>
                                 </label>
+
+                                <label className="flex items-center gap-3 cursor-pointer group">
+                                    <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${options.isCongVan ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-slate-300 group-hover:border-blue-400'}`}>
+                                        {options.isCongVan && <CheckSquare className="w-3.5 h-3.5" />}
+                                    </div>
+                                    <input 
+                                        type="checkbox" 
+                                        className="hidden"
+                                        checked={options.isCongVan}
+                                        onChange={(e) => setOptions({...options, isCongVan: e.target.checked, isMinutes: false})}
+                                    />
+                                    <div>
+                                        <span className="text-sm font-bold text-slate-700 group-hover:text-blue-600 transition-colors">Đây là CÔNG VĂN</span>
+                                        <p className="text-[10px] text-slate-400">Tự động trích yếu, thụt lề Kính gửi, Nơi nhận theo chuẩn Nghị định 30</p>
+                                    </div>
+                                </label>
                             </div>
 
-                            {/* Signer Information */}
+                            {/* Cong Van Summary Input */}
+                            {options.isCongVan && (
+                                <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4">
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">
+                                        Nội dung trích yếu (V/v...)
+                                    </label>
+                                    <textarea 
+                                        rows={2}
+                                        placeholder="VD: V/v tiếp tục triển khai thực hiện Chỉ thị số..."
+                                        value={options.congVanSummary || ""}
+                                        onChange={(e) => setOptions({...options, congVanSummary: e.target.value})}
+                                        className="w-full px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 text-blue-800 resize-none"
+                                    />
+                                </div>
+                            )}
+
+                            {/* Signer Information (For both Normal and Cong Van) */}
                             {!options.isMinutes && options.headerType !== HeaderType.NONE && (
                                 <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4 space-y-4">
                                     <div>
@@ -540,7 +573,9 @@ export default function App() {
                                         <span className="w-1.5 h-1.5 bg-red-600 rounded-full animate-pulse"></span>
                                         {options.isMinutes 
                                             ? "Bạn chưa nhập đầy đủ họ tên Chủ tọa và Thư ký"
-                                            : "Bạn chưa nhập đầy đủ thông tin về chức vụ người ký hoặc họ và tên người ký"
+                                            : (options.isCongVan && !options.congVanSummary?.trim() 
+                                                ? "Bạn chưa nhập Nội dung trích yếu của Công văn"
+                                                : "Bạn chưa nhập đầy đủ thông tin chức vụ hoặc họ tên người ký")
                                         }
                                     </p>
                                 </div>
