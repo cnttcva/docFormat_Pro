@@ -1,0 +1,21 @@
+{
+  "short_name": "DocFormat",
+  "name": "DocFormat Pro - Chuẩn hóa văn bản",
+  "description": "Hệ thống tự động chuẩn hóa văn bản hành chính",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#2563eb",
+  "background_color": "#f8fafc"
+}
