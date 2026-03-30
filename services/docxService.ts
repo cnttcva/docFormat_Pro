@@ -12,13 +12,15 @@ const DOC_TYPE_KEYWORDS = [
   "HỢP ĐỒNG", "BẢN THỎA THUẬN", "GIẤY ỦY QUYỀN", "GIẤY MỜI", "GIẤY GIỚI THIỆU", "GIẤY NGHỈ PHÉP"
 ];
 
-const DEFAULT_OPTIONS: DocxOptions = {
+const DEFAULT_OPTIONS: any = {
   headerType: HeaderType.NONE,
   removeNumbering: false,
   margins: { top: 2, bottom: 2, left: 3, right: 1.5 },
   font: { family: "Times New Roman", sizeNormal: 14, sizeTable: 13 },
   paragraph: { lineSpacing: 1.15, after: 6, indent: 1.27 },
-  table: { rowHeight: 0.8 }
+  table: { rowHeight: 0.8 },
+  isCongVan: false,
+  congVanSummary: ""
 };
 
 const ACRONYMS_LIST = [
@@ -28,6 +30,10 @@ const ACRONYMS_LIST = [
   "NQ", "QĐ", "CT", "KL", "QC", "QYĐ", "HD", "BC", "KH", "CTR", "TB", "TTR", "CV", "BB",
   "PA", "ĐA", "DA", "HĐ", "BTT", "GUQ", "GM", "GGT", "GNP"
 ];
+
+const setAttr = (el: Element, name: string, value: string) => {
+    el.setAttributeNS(W_NS, `w:${name}`, value);
+};
 
 const smartNormalizeText = (text: string): string => {
     let t = text.trim();
@@ -90,7 +96,7 @@ const isParagraphBold = (p: Element): boolean => {
             if (rPr) {
                 const b = rPr.getElementsByTagNameNS(W_NS, "b")[0];
                 if (b) {
-                    const val = b.getAttributeNS(W_NS, "val");
+                    const val = b.getAttributeNS(W_NS, "val") || b.getAttribute("w:val");
                     if (val !== "false" && val !== "0") return true;
                 }
             }
@@ -112,29 +118,28 @@ const enforceSchema = (doc: Document) => {
         "w:rPr": [
             "w:rStyle", "w:rFonts", "w:b", "w:bCs", "w:i", "w:iCs", "w:caps", "w:smallCaps", "w:strike", 
             "w:dstrike", "w:outline", "w:shadow", "w:emboss", "w:imprint", "w:noProof", "w:snapToGrid", 
-            "w:color", "w:spacing", "w:w", "w:kern", "w:position", "w:sz", "w:szCs", "w:highlight", "w:u", 
-            "w:effect", "w:bdr", "w:shd", "w:fitText", "w:vertAlign", "w:rtl", "w:cs", "w:em", "w:lang", 
-            "w:eastAsianLayout", "w:specVanish", "w:oMath", "w:rPrChange"
+            "w:vanish", "w:webHidden", "w:color", "w:spacing", "w:w", "w:kern", "w:position", "w:sz", "w:szCs", 
+            "w:highlight", "w:u", "w:effect", "w:bdr", "w:shd", "w:fitText", "w:vertAlign", "w:rtl", "w:cs", 
+            "w:em", "w:lang", "w:eastAsianLayout", "w:specVanish", "w:oMath", "w:rPrChange"
         ],
         "w:tblPr": [
             "w:tblStyle", "w:tblpPr", "w:tblOverlap", "w:bidiVisual", "w:tblStyleRowBandSize", 
             "w:tblStyleColBandSize", "w:tblW", "w:jc", "w:tblCellSpacing", "w:tblInd", "w:tblBorders", 
             "w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription", "w:tblPrChange"
         ],
-        "w:trPr": [
-            "w:cnfStyle", "w:divId", "w:gridBefore", "w:gridAfter", "w:wBefore", "w:wAfter", "w:cantSplit", 
-            "w:trHeight", "w:tblHeader", "w:tblCellSpacing", "w:jc", "w:hidden", "w:trPrChange"
-        ],
-        "w:tcPr": [
-            "w:cnfStyle", "w:tcW", "w:gridSpan", "w:hMerge", "w:vMerge", "w:tcBorders", "w:shd", "w:noWrap", 
-            "w:tcMar", "w:textDirection", "w:tcFitText", "w:vAlign", "w:hideMark", "w:headers", "w:cellIns", 
-            "w:cellDel", "w:tcPrChange"
+        "w:sectPr": [
+            "w:headerReference", "w:footerReference", "w:footnotePr", "w:endnotePr",
+            "w:type", "w:pgSz", "w:pgMar", "w:paperSrc", "w:bidi", "w:rtlGutter",
+            "w:docGrid", "w:printerSettings", "w:titlePg", "w:textDirection", "w:sectPrChange"
         ]
     };
 
     Object.keys(schema).forEach(tagName => {
-        const localName = tagName.split(":")[1];
-        const elements = Array.from(doc.getElementsByTagNameNS(W_NS, localName));
+        let elements = Array.from(doc.getElementsByTagName(tagName));
+        if (elements.length === 0) {
+            const localName = tagName.split(":")[1];
+            elements = Array.from(doc.getElementsByTagNameNS(W_NS, localName));
+        }
 
         elements.forEach(el => {
             const order = schema[tagName];
@@ -154,9 +159,7 @@ const enforceSchema = (doc: Document) => {
             });
 
             Array.from(el.childNodes).forEach(child => {
-                if (child.nodeType === 1) {
-                    el.removeChild(child);
-                }
+                if (child.nodeType === 1) el.removeChild(child);
             });
 
             order.forEach(childName => {
@@ -170,7 +173,7 @@ const enforceSchema = (doc: Document) => {
     });
 };
 
-export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPTIONS): Promise<ProcessResult> => {
+export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): Promise<ProcessResult> => {
   const logs: string[] = [];
   try {
     logs.push(`Loading file: ${file.name}`);
@@ -183,12 +186,15 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
 
     const parser = new DOMParser();
     const doc = parser.parseFromString(docXmlContent, "application/xml");
-    const body = doc.getElementsByTagNameNS(W_NS, "body")[0];
+    const body = doc.getElementsByTagNameNS(W_NS, "body")[0] || doc.getElementsByTagName("w:body")[0];
     
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
     const getOrCreate = (parent: Element, tagName: string): Element => {
-      const localName = tagName.includes(":") ? tagName.split(":")[1] : tagName;
-      let child = parent.getElementsByTagNameNS(W_NS, localName)[0];
+      let child = parent.getElementsByTagName(tagName)[0];
+      if (!child) {
+          const localName = tagName.includes(":") ? tagName.split(":")[1] : tagName;
+          child = parent.getElementsByTagNameNS(W_NS, localName)[0];
+      }
       if (!child) {
         child = doc.createElementNS(W_NS, tagName);
         if (tagName.endsWith("Pr") && parent.firstChild) {
@@ -209,20 +215,37 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
       return false;
     };
 
-    const paragraphsForCleaning = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
+    const paragraphsForCleaning = Array.from(doc.getElementsByTagName("w:p"));
+    if (paragraphsForCleaning.length === 0) paragraphsForCleaning.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
+
     for (const p of paragraphsForCleaning) {
-        const textNodes = Array.from(p.getElementsByTagNameNS(W_NS, "t"));
+        const textNodes = Array.from(p.getElementsByTagName("w:t"));
+        if (textNodes.length === 0) textNodes.push(...Array.from(p.getElementsByTagNameNS(W_NS, "t")));
+        
         if (textNodes.length > 0) {
             const firstNode = textNodes[0];
             if (firstNode.textContent) firstNode.textContent = firstNode.textContent.trimStart();
             const lastNode = textNodes[textNodes.length - 1];
             if (lastNode.textContent) lastNode.textContent = lastNode.textContent.trimEnd();
         }
+        
         const fullText = textNodes.map(n => n.textContent || "").join("");
-        const hasContent = p.getElementsByTagNameNS(W_NS, "drawing").length > 0 || 
-                           p.getElementsByTagNameNS(W_NS, "pict").length > 0 || 
-                           p.getElementsByTagNameNS(W_NS, "object").length > 0 || 
-                           p.getElementsByTagNameNS(W_NS, "br").length > 0;
+        
+        const hasDrawing = p.getElementsByTagName("w:drawing").length > 0 || p.getElementsByTagNameNS(W_NS, "drawing").length > 0;
+        const hasPict = p.getElementsByTagName("w:pict").length > 0 || p.getElementsByTagNameNS(W_NS, "pict").length > 0;
+        const hasObject = p.getElementsByTagName("w:object").length > 0 || p.getElementsByTagNameNS(W_NS, "object").length > 0;
+        const hasSectPr = p.getElementsByTagName("w:sectPr").length > 0 || p.getElementsByTagNameNS(W_NS, "sectPr").length > 0;
+        
+        let hasPageBreak = false;
+        const brs = Array.from(p.getElementsByTagName("w:br")).concat(Array.from(p.getElementsByTagNameNS(W_NS, "br")));
+        for (const br of brs) {
+            if (br.getAttribute("w:type") === "page" || br.getAttributeNS(W_NS, "type") === "page") {
+                hasPageBreak = true;
+                break;
+            }
+        }
+        
+        const hasContent = hasDrawing || hasPict || hasObject || hasSectPr || hasPageBreak;
         
         if (!hasContent && fullText.length === 0) {
             if (!isTableParagraph(p)) {
@@ -234,16 +257,16 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
     if (options.removeNumbering) {
         const allParagraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
         for (const p of allParagraphs) {
-            const pPr = p.getElementsByTagNameNS(W_NS, "pPr")[0];
+            const pPr = p.getElementsByTagNameNS(W_NS, "pPr")[0] || p.getElementsByTagName("w:pPr")[0];
             if (pPr) {
-                const numPr = pPr.getElementsByTagNameNS(W_NS, "numPr")[0];
+                const numPr = pPr.getElementsByTagNameNS(W_NS, "numPr")[0] || pPr.getElementsByTagName("w:numPr")[0];
                 if (numPr) pPr.removeChild(numPr);
                 const pStyle = getOrCreate(pPr, "w:pStyle");
-                pStyle.setAttributeNS(W_NS, "w:val", "Normal");
+                setAttr(pStyle, "val", "Normal");
             }
-            const firstRun = p.getElementsByTagNameNS(W_NS, "r")[0];
+            const firstRun = p.getElementsByTagNameNS(W_NS, "r")[0] || p.getElementsByTagName("w:r")[0];
             if (firstRun) {
-                const firstText = firstRun.getElementsByTagNameNS(W_NS, "t")[0];
+                const firstText = firstRun.getElementsByTagNameNS(W_NS, "t")[0] || firstRun.getElementsByTagName("w:t")[0];
                 if (firstText && firstText.textContent) {
                     const bulletRegex = /^[\s]*([•\-\–\—\*]|(\d+\.))[\s]+/;
                     if (bulletRegex.test(firstText.textContent)) {
@@ -254,68 +277,86 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         }
     }
 
-    const sectPrsDoc = Array.from(doc.getElementsByTagNameNS(W_NS, "sectPr"));
+    // --- CẬP NHẬT KÍCH THƯỚC TRANG VÀ LỀ TRANG (BẢO TỒN LANDSCAPE) ---
+    let sectPrsDoc = Array.from(doc.getElementsByTagName("w:sectPr"));
+    if (sectPrsDoc.length === 0) sectPrsDoc = Array.from(doc.getElementsByTagNameNS(W_NS, "sectPr"));
+
     for (const sectPr of sectPrsDoc) {
-        const pgSz = getOrCreate(sectPr, "w:pgSz");
-        const wStr = pgSz.getAttributeNS(W_NS, "w");
-        const hStr = pgSz.getAttributeNS(W_NS, "h");
-        const orient = pgSz.getAttributeNS(W_NS, "orient");
-
-        let w = parseInt(wStr || "0");
-        let h = parseInt(hStr || "0");
+        let pgSz = Array.from(sectPr.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pgSz") as Element;
+        if (!pgSz) {
+            pgSz = doc.createElementNS(W_NS, "w:pgSz");
+            if (sectPr.firstChild) sectPr.insertBefore(pgSz, sectPr.firstChild);
+            else sectPr.appendChild(pgSz);
+        }
         
-        let isLandscape = orient === "landscape" || w > h;
+        const orient = pgSz.getAttributeNS(W_NS, "orient") || pgSz.getAttribute("w:orient");
+        const wStr = pgSz.getAttributeNS(W_NS, "w") || pgSz.getAttribute("w:w");
+        const hStr = pgSz.getAttributeNS(W_NS, "h") || pgSz.getAttribute("w:h");
+        
+        const w = parseInt(wStr || "0");
+        const h = parseInt(hStr || "0");
+        const isLandscape = orient === "landscape" || w > h;
 
+        // Ép khổ giấy về A4 nhưng giữ nguyên chiều ngang/dọc
         if (isLandscape) {
-            pgSz.setAttributeNS(W_NS, "w", String(Math.round(29.7 * TWIPS_PER_CM)));
-            pgSz.setAttributeNS(W_NS, "w:h", String(Math.round(21 * TWIPS_PER_CM)));
-            pgSz.setAttributeNS(W_NS, "w:orient", "landscape");
+            setAttr(pgSz, "w", "16838"); // A4 Ngang
+            setAttr(pgSz, "h", "11906");
+            setAttr(pgSz, "orient", "landscape");
         } else {
-            pgSz.setAttributeNS(W_NS, "w", String(Math.round(21 * TWIPS_PER_CM)));
-            pgSz.setAttributeNS(W_NS, "w:h", String(Math.round(29.7 * TWIPS_PER_CM)));
-            pgSz.setAttributeNS(W_NS, "w:orient", "portrait");
+            setAttr(pgSz, "w", "11906"); // A4 Dọc
+            setAttr(pgSz, "h", "16838");
+            pgSz.removeAttributeNS(W_NS, "orient");
+            pgSz.removeAttribute("w:orient");
         }
 
-        const pgMar = getOrCreate(sectPr, "w:pgMar");
-        pgMar.setAttributeNS(W_NS, "w:top", String(Math.round(options.margins.top * TWIPS_PER_CM)));
-        pgMar.setAttributeNS(W_NS, "w:bottom", String(Math.round(options.margins.bottom * TWIPS_PER_CM)));
-        pgMar.setAttributeNS(W_NS, "w:left", String(Math.round(options.margins.left * TWIPS_PER_CM)));
-        pgMar.setAttributeNS(W_NS, "w:right", String(Math.round(options.margins.right * TWIPS_PER_CM)));
+        let pgMar = Array.from(sectPr.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pgMar") as Element;
+        if (!pgMar) {
+            pgMar = doc.createElementNS(W_NS, "w:pgMar");
+            sectPr.insertBefore(pgMar, pgSz.nextSibling); // Đảm bảo đúng trật tự XML
+        }
+        
+        setAttr(pgMar, "top", String(Math.round(options.margins.top * TWIPS_PER_CM)));
+        setAttr(pgMar, "bottom", String(Math.round(options.margins.bottom * TWIPS_PER_CM)));
+        setAttr(pgMar, "left", String(Math.round(options.margins.left * TWIPS_PER_CM)));
+        setAttr(pgMar, "right", String(Math.round(options.margins.right * TWIPS_PER_CM)));
     }
 
     const rebuildParagraph = (p: Element, text: string, isBold: boolean, fontSize: string, isTitle: boolean) => {
         Array.from(p.childNodes).forEach(child => {
-            if (child.nodeName !== "w:pPr") p.removeChild(child);
+            const localName = child.nodeName.includes(":") ? child.nodeName.split(":")[1] : child.nodeName;
+            if (localName !== "pPr") p.removeChild(child);
         });
         const r = doc.createElementNS(W_NS, "w:r");
         const rPr = doc.createElementNS(W_NS, "w:rPr");
         r.appendChild(rPr); 
         const pPr = getOrCreate(p, "w:pPr");
         const jc = getOrCreate(pPr, "w:jc");
-        jc.setAttributeNS(W_NS, "w:val", "center");
+        setAttr(jc, "val", "center");
         const ind = getOrCreate(pPr, "w:ind");
-        ind.setAttributeNS(W_NS, "w:left", "0");
-        ind.setAttributeNS(W_NS, "w:right", "0");
-        ind.setAttributeNS(W_NS, "w:firstLine", "0");
+        setAttr(ind, "left", "0");
+        setAttr(ind, "right", "0");
+        setAttr(ind, "firstLine", "0");
         ind.removeAttributeNS(W_NS, "hanging");
+        ind.removeAttribute("w:hanging");
+        
         const spacing = getOrCreate(pPr, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", isTitle ? "480" : "0");
-        spacing.setAttributeNS(W_NS, "w:after", "0"); 
-        spacing.setAttributeNS(W_NS, "w:line", "240");
-        spacing.setAttributeNS(W_NS, "w:lineRule", "auto");
+        setAttr(spacing, "before", isTitle ? "480" : "0");
+        setAttr(spacing, "after", "0"); 
+        setAttr(spacing, "line", "240");
+        setAttr(spacing, "lineRule", "auto");
         const rFonts = getOrCreate(rPr, "w:rFonts");
-        rFonts.setAttributeNS(W_NS, "w:ascii", options.font.family);
-        rFonts.setAttributeNS(W_NS, "w:hAnsi", options.font.family);
-        rFonts.setAttributeNS(W_NS, "w:cs", options.font.family);
-        rFonts.setAttributeNS(W_NS, "w:eastAsia", options.font.family);
+        setAttr(rFonts, "ascii", options.font.family);
+        setAttr(rFonts, "hAnsi", options.font.family);
+        setAttr(rFonts, "cs", options.font.family);
+        setAttr(rFonts, "eastAsia", options.font.family);
         const b = getOrCreate(rPr, "w:b");
-        b.setAttributeNS(W_NS, "w:val", isBold ? "true" : "false"); 
+        setAttr(b, "val", isBold ? "true" : "false"); 
         const iEl = getOrCreate(rPr, "w:i");
-        iEl.setAttributeNS(W_NS, "w:val", "false");
+        setAttr(iEl, "val", "false");
         const sz = getOrCreate(rPr, "w:sz");
-        sz.setAttributeNS(W_NS, "w:val", fontSize);
+        setAttr(sz, "val", fontSize);
         const szCs = getOrCreate(rPr, "w:szCs");
-        szCs.setAttributeNS(W_NS, "w:val", fontSize);
+        setAttr(szCs, "val", fontSize);
         const t = doc.createElementNS(W_NS, "w:t");
         t.textContent = text;
         r.appendChild(t);
@@ -329,21 +370,21 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         const tblPr = doc.createElementNS(W_NS, "w:tblPr");
         tbl.appendChild(tblPr);
         const jcTbl = doc.createElementNS(W_NS, "w:jc");
-        jcTbl.setAttributeNS(W_NS, "w:val", "center");
+        setAttr(jcTbl, "val", "center");
         tblPr.appendChild(jcTbl);
         
         const tblW = doc.createElementNS(W_NS, "w:tblW");
-        tblW.setAttributeNS(W_NS, "w:w", "1500");
-        tblW.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(tblW, "w", "1500");
+        setAttr(tblW, "type", "dxa");
         tblPr.appendChild(tblW); 
         
         const tblLayout = doc.createElementNS(W_NS, "w:tblLayout");
-        tblLayout.setAttributeNS(W_NS, "w:type", "fixed");
+        setAttr(tblLayout, "type", "fixed");
         tblPr.appendChild(tblLayout);
         
         const tblGrid = doc.createElementNS(W_NS, "w:tblGrid");
         const gridCol = doc.createElementNS(W_NS, "w:gridCol");
-        gridCol.setAttributeNS(W_NS, "w:w", "1500");
+        setAttr(gridCol, "w", "1500");
         tblGrid.appendChild(gridCol);
         tbl.appendChild(tblGrid);
         
@@ -351,8 +392,8 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         tbl.appendChild(tr);
         const trPr = doc.createElementNS(W_NS, "w:trPr");
         const trHeight = doc.createElementNS(W_NS, "w:trHeight");
-        trHeight.setAttributeNS(W_NS, "w:val", String(Math.round(0.1 * TWIPS_PER_CM)));
-        trHeight.setAttributeNS(W_NS, "w:hRule", "exact");
+        setAttr(trHeight, "val", String(Math.round(0.1 * TWIPS_PER_CM)));
+        setAttr(trHeight, "hRule", "exact");
         trPr.appendChild(trHeight);
         tr.appendChild(trPr);
         
@@ -361,25 +402,25 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         const tcPr = doc.createElementNS(W_NS, "w:tcPr");
         tc.appendChild(tcPr);
         const tcW = doc.createElementNS(W_NS, "w:tcW");
-        tcW.setAttributeNS(W_NS, "w:w", "1500");
-        tcW.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(tcW, "w", "1500");
+        setAttr(tcW, "type", "dxa");
         tcPr.appendChild(tcW);
         
         const tcMar = doc.createElementNS(W_NS, "w:tcMar");
         ["top", "bottom", "left", "right"].forEach(side => {
             const mar = doc.createElementNS(W_NS, `w:${side}`);
-            mar.setAttributeNS(W_NS, "w:w", "0");
-            mar.setAttributeNS(W_NS, "w:type", "dxa");
+            setAttr(mar, "w", "0");
+            setAttr(mar, "type", "dxa");
             tcMar.appendChild(mar);
         });
         tcPr.appendChild(tcMar);
 
         const tcBorders = doc.createElementNS(W_NS, "w:tcBorders");
         const top = doc.createElementNS(W_NS, "w:top");
-        top.setAttributeNS(W_NS, "w:val", "single");
-        top.setAttributeNS(W_NS, "w:sz", "6"); 
-        top.setAttributeNS(W_NS, "w:space", "0");
-        top.setAttributeNS(W_NS, "w:color", "000000");
+        setAttr(top, "val", "single");
+        setAttr(top, "sz", "6"); 
+        setAttr(top, "space", "0");
+        setAttr(top, "color", "000000");
         tcBorders.appendChild(top);
         tcPr.appendChild(tcBorders);
         
@@ -387,10 +428,10 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         const pPr = doc.createElementNS(W_NS, "w:pPr");
         p.appendChild(pPr);
         const spacing = doc.createElementNS(W_NS, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", "0");
-        spacing.setAttributeNS(W_NS, "w:after", "0");
-        spacing.setAttributeNS(W_NS, "w:line", "24"); 
-        spacing.setAttributeNS(W_NS, "w:lineRule", "exact");
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "0");
+        setAttr(spacing, "line", "24"); 
+        setAttr(spacing, "lineRule", "exact");
         pPr.appendChild(spacing);
         tc.appendChild(p);
         protectedElements.add(p);
@@ -400,10 +441,10 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         const safePPr = doc.createElementNS(W_NS, "w:pPr");
         safeP.appendChild(safePPr);
         const safeSpacing = doc.createElementNS(W_NS, "w:spacing");
-        safeSpacing.setAttributeNS(W_NS, "w:before", "0");
-        safeSpacing.setAttributeNS(W_NS, "w:after", "120"); 
-        safeSpacing.setAttributeNS(W_NS, "w:line", "2"); 
-        safeSpacing.setAttributeNS(W_NS, "w:lineRule", "exact");
+        setAttr(safeSpacing, "before", "0");
+        setAttr(safeSpacing, "after", "120"); 
+        setAttr(safeSpacing, "line", "2"); 
+        setAttr(safeSpacing, "lineRule", "exact");
         safePPr.appendChild(safeSpacing);
         protectedElements.add(safeP);
         frag.appendChild(safeP);
@@ -414,30 +455,31 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         const p = doc.createElementNS(W_NS, "w:p");
         const pPr = getOrCreate(p, "w:pPr");
         const jc = getOrCreate(pPr, "w:jc");
-        jc.setAttributeNS(W_NS, "w:val", "center");
+        setAttr(jc, "val", "center");
         const ind = getOrCreate(pPr, "w:ind");
-        ind.setAttributeNS(W_NS, "w:left", "0");
-        ind.setAttributeNS(W_NS, "w:right", "0");
-        ind.setAttributeNS(W_NS, "w:firstLine", "0");
+        setAttr(ind, "left", "0");
+        setAttr(ind, "right", "0");
+        setAttr(ind, "firstLine", "0");
         ind.removeAttributeNS(W_NS, "hanging");
+        ind.removeAttribute("w:hanging");
         const spacing = getOrCreate(pPr, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", "0");
-        spacing.setAttributeNS(W_NS, "w:after", "120"); 
-        spacing.setAttributeNS(W_NS, "w:line", "240"); 
-        spacing.setAttributeNS(W_NS, "w:lineRule", "auto");
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "120"); 
+        setAttr(spacing, "line", "240"); 
+        setAttr(spacing, "lineRule", "auto");
         const r = doc.createElementNS(W_NS, "w:r");
         const rPr = getOrCreate(r, "w:rPr");
         const rFonts = getOrCreate(rPr, "w:rFonts");
-        rFonts.setAttributeNS(W_NS, "w:ascii", options.font.family);
-        rFonts.setAttributeNS(W_NS, "w:hAnsi", options.font.family);
-        rFonts.setAttributeNS(W_NS, "w:cs", options.font.family);
-        rFonts.setAttributeNS(W_NS, "w:eastAsia", options.font.family);
+        setAttr(rFonts, "ascii", options.font.family);
+        setAttr(rFonts, "hAnsi", options.font.family);
+        setAttr(rFonts, "cs", options.font.family);
+        setAttr(rFonts, "eastAsia", options.font.family);
         const b = getOrCreate(rPr, "w:b");
-        b.setAttributeNS(W_NS, "w:val", "false"); 
+        setAttr(b, "val", "false"); 
         const sz = getOrCreate(rPr, "w:sz");
-        sz.setAttributeNS(W_NS, "w:val", String(options.font.sizeNormal * 2));
+        setAttr(sz, "val", String(options.font.sizeNormal * 2));
         const szCs = getOrCreate(rPr, "w:szCs");
-        szCs.setAttributeNS(W_NS, "w:val", String(options.font.sizeNormal * 2));
+        setAttr(szCs, "val", String(options.font.sizeNormal * 2));
         const t = doc.createElementNS(W_NS, "w:t");
         t.textContent = "-----";
         r.appendChild(t);
@@ -446,7 +488,9 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         return p;
     };
 
-    const paragraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
+    const paragraphs = Array.from(doc.getElementsByTagName("w:p"));
+    if (paragraphs.length === 0) paragraphs.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
+    
     let detectedDocType = ""; 
     const docTypeElements = new Set<Element>();
     const abstractElements = new Set<Element>();
@@ -460,6 +504,15 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         if (isTableParagraph(p)) continue;
         const text = p.textContent?.trim() || "";
         if (!text) continue;
+
+        if (options.isCongVan) {
+            const upperText = text.toUpperCase();
+            if (upperText === "CÔNG VĂN" || upperText.startsWith("V/V") || upperText.startsWith("VỀ VIỆC") || upperText.startsWith("TRÍCH YẾU")) {
+                abstractElements.add(p);
+                p.parentNode?.removeChild(p);
+            }
+            continue; 
+        }
 
         const cleanText = text.toUpperCase().replace(/^[^A-ZÀ-Ỹ]+/, '');
         const matchedKeyword = DOC_TYPE_KEYWORDS.find(k => cleanText.startsWith(k));
@@ -495,10 +548,8 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
                 if (tempText.length > 0) {
                     const upperText = tempText.toUpperCase();
                     
-                    if (tempText.startsWith("Căn cứ") || tempText.startsWith("Xét") || tempText.startsWith("Theo") || tempText.startsWith("Kính gửi") || tempText.startsWith("Hôm nay") || tempText.startsWith("Thời gian:") || tempText.startsWith("Đồng kính gửi")) break;
+                    if (upperText.startsWith("CĂN CỨ") || upperText.startsWith("XÉT") || upperText.startsWith("THEO") || upperText.startsWith("KÍNH GỬI") || upperText.startsWith("HÔM NAY") || upperText.startsWith("THỜI GIAN:") || upperText.startsWith("ĐỒNG KÍNH GỬI")) break;
                     
-                    // --- BẢO VỆ CHỨC NĂNG QUYẾT ĐỊNH THÔNG MINH ---
-                    // Chặn việc gom nhầm Thẩm quyền ban hành (HIỆU TRƯỞNG...) vào Trích yếu
                     if (upperText.startsWith("HIỆU TRƯỞNG") || upperText.startsWith("GIÁM ĐỐC") || upperText.startsWith("CHỦ TỊCH") || upperText.startsWith("QUYẾT ĐỊNH")) {
                         break;
                     }
@@ -508,14 +559,8 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
 
                     const isBold = isParagraphBold(tempP);
                     
-                    if (hasFoundBoldSummary && !isBold) {
-                        break;
-                    }
-
-                    if (isBold) {
-                        hasFoundBoldSummary = true;
-                    }
-
+                    if (hasFoundBoldSummary && !isBold) break;
+                    if (isBold) hasFoundBoldSummary = true;
                     if (!hasFoundBoldSummary && linesCaptured >= 3) break;
 
                     summaryParagraphs.push(tempP);
@@ -529,22 +574,29 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
 
             summaryParagraphs.forEach(sp => abstractElements.add(sp));
 
-            const targetNode = summaryParagraphs.length > 0 ? summaryParagraphs[summaryParagraphs.length - 1] : p;
-            
-            if (options.headerType === HeaderType.PARTY) {
-                const dashP = createPartyDashLine(protectedElements);
-                if (targetNode.nextSibling) targetNode.parentNode?.insertBefore(dashP, targetNode.nextSibling);
-                else targetNode.parentNode?.appendChild(dashP);
-            } else {
-                const underlineFrag = createTitleUnderlineFrag(protectedElements, lineTables);
-                if (targetNode.nextSibling) targetNode.parentNode?.insertBefore(underlineFrag, targetNode.nextSibling);
-                else targetNode.parentNode?.appendChild(underlineFrag);
+            // --- PHỤC HỒI ĐƯỜNG KẺ NGANG TRỞ LẠI ---
+            if (!options.isCongVan) {
+                const targetNode = summaryParagraphs.length > 0 ? summaryParagraphs[summaryParagraphs.length - 1] : p;
+                if (options.headerType === HeaderType.PARTY) {
+                    const dashP = createPartyDashLine(protectedElements);
+                    if (targetNode.nextSibling) targetNode.parentNode?.insertBefore(dashP, targetNode.nextSibling);
+                    else targetNode.parentNode?.appendChild(dashP);
+                } else {
+                    const underlineFrag = createTitleUnderlineFrag(protectedElements, lineTables);
+                    if (targetNode.nextSibling) targetNode.parentNode?.insertBefore(underlineFrag, targetNode.nextSibling);
+                    else targetNode.parentNode?.appendChild(underlineFrag);
+                }
             }
             break; 
         }
     }
 
-    const finalParagraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
+    const finalParagraphs = Array.from(doc.getElementsByTagName("w:p"));
+    if (finalParagraphs.length === 0) finalParagraphs.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
+
+    let inKinhGuiBlock = false;
+    let addSpaceBeforeMainContent = false;
+
     for (const p of finalParagraphs) {
       if (docTypeElements.has(p) || abstractElements.has(p) || protectedElements.has(p)) continue; 
       
@@ -552,130 +604,214 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
       if (isTable) continue; 
       
       const pPr = getOrCreate(p, "w:pPr");
-      const pText = p.textContent?.trim() || "";
-      const upperText = pText.toUpperCase();
+      const pText = p.textContent || "";
+      const trimmedPText = pText.trim();
+      const upperText = trimmedPText.toUpperCase();
+
+      if (options.isCongVan) {
+          if (upperText.startsWith("KÍNH GỬI:") || upperText === "KÍNH GỬI") {
+              inKinhGuiBlock = true;
+              const jc = getOrCreate(pPr, "w:jc");
+              setAttr(jc, "val", "left");
+              const ind = getOrCreate(pPr, "w:ind");
+              setAttr(ind, "left", "2160"); 
+              setAttr(ind, "right", "0");
+              setAttr(ind, "firstLine", "0");
+              ind.removeAttributeNS(W_NS, "hanging");
+              ind.removeAttribute("w:hanging");
+
+              const spacing = getOrCreate(pPr, "w:spacing");
+              setAttr(spacing, "before", "240"); 
+              setAttr(spacing, "after", "0");
+
+              const targetSize = options.font.sizeNormal * 2;
+              const runs = Array.from(p.getElementsByTagName("w:r"));
+              if (runs.length === 0) runs.push(...Array.from(p.getElementsByTagNameNS(W_NS, "r")));
+              
+              for (const r of runs) {
+                  const rPr = getOrCreate(r, "w:rPr");
+                  const b = getOrCreate(rPr, "w:b");
+                  setAttr(b, "val", "true"); 
+                  
+                  const iEl = rPr.getElementsByTagName("w:i")[0] || rPr.getElementsByTagNameNS(W_NS, "i")[0];
+                  if (iEl) setAttr(iEl, "val", "false"); 
+                  
+                  const sz = getOrCreate(rPr, "w:sz");
+                  setAttr(sz, "val", String(targetSize));
+                  const szCs = getOrCreate(rPr, "w:szCs");
+                  setAttr(szCs, "val", String(targetSize));
+              }
+              continue; 
+          }
+
+          if (inKinhGuiBlock) {
+              if (trimmedPText.startsWith("-") || trimmedPText.startsWith("+")) {
+                  const jc = getOrCreate(pPr, "w:jc");
+                  setAttr(jc, "val", "left");
+                  const ind = getOrCreate(pPr, "w:ind");
+                  setAttr(ind, "left", "2880");
+                  setAttr(ind, "right", "0");
+                  setAttr(ind, "firstLine", "0");
+                  ind.removeAttributeNS(W_NS, "hanging");
+                  ind.removeAttribute("w:hanging");
+
+                  const spacing = getOrCreate(pPr, "w:spacing");
+                  setAttr(spacing, "before", "0");
+                  setAttr(spacing, "after", "0");
+
+                  const targetSize = options.font.sizeNormal * 2;
+                  const runs = Array.from(p.getElementsByTagName("w:r"));
+                  if (runs.length === 0) runs.push(...Array.from(p.getElementsByTagNameNS(W_NS, "r")));
+                  
+                  for (const r of runs) {
+                      const rPr = getOrCreate(r, "w:rPr");
+                      const b = getOrCreate(rPr, "w:b");
+                      setAttr(b, "val", "true"); 
+                      
+                      const iEl = rPr.getElementsByTagName("w:i")[0] || rPr.getElementsByTagNameNS(W_NS, "i")[0];
+                      if (iEl) setAttr(iEl, "val", "false");
+                      
+                      const sz = getOrCreate(rPr, "w:sz");
+                      setAttr(sz, "val", String(targetSize));
+                      const szCs = getOrCreate(rPr, "w:szCs");
+                      setAttr(szCs, "val", String(targetSize));
+                  }
+                  continue;
+              } else if (trimmedPText.length > 0) {
+                  inKinhGuiBlock = false;
+                  addSpaceBeforeMainContent = true;
+              }
+          }
+      }
 
       let isDecisionSpecialLine = false;
-      if (detectedDocType === "QUYẾT ĐỊNH" && pText.length > 0) {
+      if (detectedDocType === "QUYẾT ĐỊNH" && trimmedPText.length > 0) {
           if (upperText === "QUYẾT ĐỊNH:" || upperText === "QUYẾT ĐỊNH") {
               isDecisionSpecialLine = true;
           } 
-          else if (pText === upperText && pText.length < 150 && /[A-ZÀ-Ỹ]/.test(upperText)) {
+          else if (trimmedPText === upperText && trimmedPText.length < 150 && /[A-ZÀ-Ỹ]/.test(upperText)) {
               isDecisionSpecialLine = true;
           }
       }
 
       if (isDecisionSpecialLine) {
         const jc = getOrCreate(pPr, "w:jc");
-        jc.setAttributeNS(W_NS, "w:val", "center");
+        setAttr(jc, "val", "center");
         const spacing = getOrCreate(pPr, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", "120");
-        spacing.setAttributeNS(W_NS, "w:after", "120");
-        spacing.setAttributeNS(W_NS, "w:line", "240"); 
-        spacing.setAttributeNS(W_NS, "w:lineRule", "auto");
+        setAttr(spacing, "before", "120");
+        setAttr(spacing, "after", "120");
+        setAttr(spacing, "line", "240"); 
+        setAttr(spacing, "lineRule", "auto");
         const ind = getOrCreate(pPr, "w:ind");
-        ind.setAttributeNS(W_NS, "w:left", "0");
-        ind.setAttributeNS(W_NS, "w:right", "0");
-        ind.setAttributeNS(W_NS, "w:firstLine", "0");
+        setAttr(ind, "left", "0");
+        setAttr(ind, "right", "0");
+        setAttr(ind, "firstLine", "0");
         ind.removeAttributeNS(W_NS, "hanging");
+        ind.removeAttribute("w:hanging");
 
         const targetSize = options.font.sizeNormal * 2;
         const runs = Array.from(p.getElementsByTagNameNS(W_NS, "r"));
         for (const r of runs) {
             const rPr = getOrCreate(r, "w:rPr");
             const b = getOrCreate(rPr, "w:b");
-            b.setAttributeNS(W_NS, "w:val", "true");
+            setAttr(b, "val", "true");
             const sz = getOrCreate(rPr, "w:sz");
-            sz.setAttributeNS(W_NS, "w:val", String(targetSize));
+            setAttr(sz, "val", String(targetSize));
             const szCs = getOrCreate(rPr, "w:szCs");
-            szCs.setAttributeNS(W_NS, "w:val", String(targetSize));
+            setAttr(szCs, "val", String(targetSize));
         }
         continue; 
       }
 
-      const lowerPText = pText.toLowerCase().replace(/^[\-\+*•\s]+/, '');
+      const lowerPText = trimmedPText.toLowerCase().replace(/^[\-\+*•\s]+/, '');
       const isBasisLine = lowerPText.startsWith("căn cứ") || lowerPText.startsWith("xét") || lowerPText.startsWith("theo");
       
       let isItalicBasis = false;
       if (isBasisLine) {
           if (detectedDocType === "QUYẾT ĐỊNH" || detectedDocType === "NGHỊ QUYẾT") {
               isItalicBasis = true; 
-          } else {
-              isItalicBasis = false; 
           }
       }
 
       const jc = getOrCreate(pPr, "w:jc");
-      jc.setAttributeNS(W_NS, "w:val", "both");
+      setAttr(jc, "val", "both");
       const spacing = getOrCreate(pPr, "w:spacing");
-      spacing.setAttributeNS(W_NS, "w:before", "0");
-      spacing.setAttributeNS(W_NS, "w:after", String(Math.round(options.paragraph.after * TWIPS_PER_PT)));
-      spacing.setAttributeNS(W_NS, "w:line", String(Math.round(options.paragraph.lineSpacing * 240))); 
-      spacing.setAttributeNS(W_NS, "w:lineRule", "auto");
+      
+      if (addSpaceBeforeMainContent) {
+          setAttr(spacing, "before", "240"); 
+          addSpaceBeforeMainContent = false; 
+      } else {
+          setAttr(spacing, "before", "0");
+      }
+
+      setAttr(spacing, "after", String(Math.round(options.paragraph.after * TWIPS_PER_PT)));
+      setAttr(spacing, "line", String(Math.round(options.paragraph.lineSpacing * 240))); 
+      setAttr(spacing, "lineRule", "auto");
       const ind = getOrCreate(pPr, "w:ind");
-      ind.setAttributeNS(W_NS, "w:left", "0");
-      ind.setAttributeNS(W_NS, "w:right", "0");
-      ind.setAttributeNS(W_NS, "w:firstLine", String(Math.round(options.paragraph.indent * TWIPS_PER_CM)));
+      setAttr(ind, "left", "0");
+      setAttr(ind, "right", "0");
+      setAttr(ind, "firstLine", String(Math.round(options.paragraph.indent * TWIPS_PER_CM)));
       
       const targetSize = options.font.sizeNormal * 2;
       const runs = Array.from(p.getElementsByTagNameNS(W_NS, "r"));
       for (const r of runs) {
           const rPr = getOrCreate(r, "w:rPr");
           const sz = getOrCreate(rPr, "w:sz");
-          sz.setAttributeNS(W_NS, "w:val", String(targetSize));
+          setAttr(sz, "val", String(targetSize));
           const szCs = getOrCreate(rPr, "w:szCs");
-          szCs.setAttributeNS(W_NS, "w:val", String(targetSize));
+          setAttr(szCs, "val", String(targetSize));
 
           if (isBasisLine) {
               const iEl = getOrCreate(rPr, "w:i");
-              iEl.setAttributeNS(W_NS, "w:val", isItalicBasis ? "true" : "false");
+              setAttr(iEl, "val", isItalicBasis ? "true" : "false");
               const iCsEl = getOrCreate(rPr, "w:iCs");
-              iCsEl.setAttributeNS(W_NS, "w:val", isItalicBasis ? "true" : "false");
+              setAttr(iCsEl, "val", isItalicBasis ? "true" : "false");
               
               const bEl = getOrCreate(rPr, "w:b");
-              bEl.setAttributeNS(W_NS, "w:val", "false");
+              setAttr(bEl, "val", "false");
               const bCsEl = getOrCreate(rPr, "w:bCs");
-              bCsEl.setAttributeNS(W_NS, "w:val", "false");
+              setAttr(bCsEl, "val", "false");
           }
       }
     }
 
-    const tables = Array.from(doc.getElementsByTagNameNS(W_NS, "tbl"));
+    const tables = Array.from(doc.getElementsByTagName("w:tbl"));
+    if (tables.length === 0) tables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
+
     for (const tbl of tables) {
-        if (lineTables.has(tbl)) continue;
-        
         let sttColIndex = -1;
 
-        const rows = Array.from(tbl.getElementsByTagNameNS(W_NS, "tr"));
+        const rows = Array.from(tbl.getElementsByTagName("w:tr"));
         for (let rIndex = 0; rIndex < rows.length; rIndex++) {
             const tr = rows[rIndex];
             const trPr = getOrCreate(tr, "w:trPr");
 
             let isHeaderRow = (rIndex === 0);
-            if (!isHeaderRow && trPr.getElementsByTagNameNS(W_NS, "tblHeader").length > 0) {
+            if (!isHeaderRow && trPr.getElementsByTagName("w:tblHeader").length > 0) {
                 isHeaderRow = true;
             }
 
             let trHeight = getOrCreate(trPr, "w:trHeight");
-            trHeight.setAttributeNS(W_NS, "w:val", String(Math.round(options.table.rowHeight * TWIPS_PER_CM))); 
-            trHeight.setAttributeNS(W_NS, "w:hRule", "atLeast"); 
+            setAttr(trHeight, "val", String(Math.round(options.table.rowHeight * TWIPS_PER_CM))); 
+            setAttr(trHeight, "hRule", "atLeast"); 
 
-            const cells = Array.from(tr.getElementsByTagNameNS(W_NS, "tc"));
+            const cells = Array.from(tr.getElementsByTagName("w:tc"));
             let logicalColIndex = 0;
 
             for (const tc of cells) {
                 const tcPr = getOrCreate(tc, "w:tcPr");
                 const vAlign = getOrCreate(tcPr, "w:vAlign");
-                vAlign.setAttributeNS(W_NS, "w:val", "center"); 
+                setAttr(vAlign, "val", "center"); 
                 
-                const gridSpanEl = tcPr.getElementsByTagNameNS(W_NS, "gridSpan")[0];
-                const gridSpan = gridSpanEl ? parseInt(gridSpanEl.getAttributeNS(W_NS, "val") || "1") : 1;
+                const gridSpanEl = tcPr.getElementsByTagName("w:gridSpan")[0];
+                const gridSpan = gridSpanEl ? parseInt(gridSpanEl.getAttribute("w:val") || "1") : 1;
 
-                const tcParagraphs = Array.from(tc.getElementsByTagNameNS(W_NS, "p"));
+                const tcParagraphs = Array.from(tc.getElementsByTagName("w:p"));
                 
                 if (isHeaderRow) {
-                    const cellFullText = tc.textContent || "";
-                    const cleanText = cellFullText.toUpperCase().replace(/\./g, '').trim();
+                    const textNodes = Array.from(tc.getElementsByTagName("w:t"));
+                    const rawText = textNodes.map(n => n.textContent || "").join("").trim();
+                    const cleanText = rawText.toUpperCase().replace(/\./g, '');
                     if (cleanText === "STT" || cleanText === "SỐ TT") {
                         sttColIndex = logicalColIndex;
                     }
@@ -686,28 +822,31 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
                     const jc = getOrCreate(pPr, "w:jc");
                     
                     if (isHeaderRow || logicalColIndex === sttColIndex) {
-                        jc.setAttributeNS(W_NS, "w:val", "center");
+                        setAttr(jc, "val", "center");
                     } else {
-                        jc.setAttributeNS(W_NS, "w:val", "left");
+                        setAttr(jc, "val", "left");
                     }
                     
                     const ind = getOrCreate(pPr, "w:ind");
-                    ind.setAttributeNS(W_NS, "w:left", "0");
-                    ind.setAttributeNS(W_NS, "w:right", "0");
-                    ind.setAttributeNS(W_NS, "w:firstLine", "0");
-                    ind.removeAttributeNS(W_NS, "hanging");
+                    setAttr(ind, "left", "0");
+                    setAttr(ind, "right", "0");
+                    setAttr(ind, "firstLine", "0");
+                    ind.removeAttribute("w:hanging");
 
-                    const runs = Array.from(p.getElementsByTagNameNS(W_NS, "r"));
+                    const runs = Array.from(p.getElementsByTagName("w:r"));
                     
                     if (isHeaderRow) {
-                        const fullText = p.textContent || "";
-                        const hasLetters = /[A-ZÀ-Ỹa-zà-ỹ]/.test(fullText);
+                        const textNodes = Array.from(p.getElementsByTagName("w:t"));
+                        const rawText = textNodes.map(n => n.textContent || "").join("").trim();
                         
-                        if (hasLetters) {
-                            const cleanT = normalizeTableHeader(fullText);
-                            
+                        const isLayoutText = /CỘNG HÒA|ĐỘC LẬP|UBND|TRƯỜNG|MẪU|SỞ|PHÒNG/i.test(rawText);
+                        const hasLetters = /[A-ZÀ-Ỹa-zà-ỹ]/.test(rawText);
+                        
+                        if (hasLetters && !isLayoutText && rawText.length < 100) {
+                            const cleanT = normalizeTableHeader(rawText);
                             Array.from(p.childNodes).forEach(child => {
-                                if (child.nodeName !== "w:pPr") p.removeChild(child);
+                                const localName = child.nodeName.includes(":") ? child.nodeName.split(":")[1] : child.nodeName;
+                                if (localName !== "pPr") p.removeChild(child);
                             });
                             
                             const r = doc.createElementNS(W_NS, "w:r");
@@ -715,14 +854,15 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
                             r.appendChild(rPr);
                             
                             const b = doc.createElementNS(W_NS, "w:b");
-                            b.setAttributeNS(W_NS, "w:val", "true"); 
+                            setAttr(b, "val", "true"); 
                             rPr.appendChild(b);
                             
+                            const targetSz = String(options.font.sizeTable * 2);
                             const sz = doc.createElementNS(W_NS, "w:sz");
-                            sz.setAttributeNS(W_NS, "w:val", "26"); 
+                            setAttr(sz, "val", targetSz); 
                             rPr.appendChild(sz);
                             const szCs = doc.createElementNS(W_NS, "w:szCs");
-                            szCs.setAttributeNS(W_NS, "w:val", "26");
+                            setAttr(szCs, "val", targetSz);
                             rPr.appendChild(szCs);
                             
                             const t = doc.createElementNS(W_NS, "w:t");
@@ -733,20 +873,22 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
                             for (const r of runs) {
                                 const rPr = getOrCreate(r, "w:rPr");
                                 const b = getOrCreate(rPr, "w:b");
-                                b.setAttributeNS(W_NS, "w:val", "true");
+                                setAttr(b, "val", "true");
+                                const targetSz = String(options.font.sizeTable * 2);
                                 const sz = getOrCreate(rPr, "w:sz");
-                                sz.setAttributeNS(W_NS, "w:val", "26");
+                                setAttr(sz, "val", targetSz);
                                 const szCs = getOrCreate(rPr, "w:szCs");
-                                szCs.setAttributeNS(W_NS, "w:val", "26");
+                                setAttr(szCs, "val", targetSz);
                             }
                         }
                     } else {
                         for (const r of runs) {
                             const rPr = getOrCreate(r, "w:rPr");
+                            const targetSz = String(options.font.sizeTable * 2);
                             const sz = getOrCreate(rPr, "w:sz");
-                            sz.setAttributeNS(W_NS, "w:val", "26"); 
+                            setAttr(sz, "val", targetSz); 
                             const szCs = getOrCreate(rPr, "w:szCs");
-                            szCs.setAttributeNS(W_NS, "w:val", "26");
+                            setAttr(szCs, "val", targetSz);
                         }
                     }
                 }
@@ -760,7 +902,7 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         if (body.firstChild) body.insertBefore(headerTable, body.firstChild);
         else body.appendChild(headerTable);
 
-        const sectPrs = body.getElementsByTagNameNS(W_NS, "sectPr");
+        const sectPrs = Array.from(doc.getElementsByTagName("w:sectPr"));
         const lastSectPr = sectPrs.length > 0 ? sectPrs[sectPrs.length - 1] : null;
         
         const blankP = doc.createElementNS(W_NS, "w:p");
@@ -775,21 +917,23 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         }
     }
 
-    const allRunsInDoc = Array.from(doc.getElementsByTagNameNS(W_NS, "r"));
+    // --- PHỤC HỒI: DỌN SẠCH FONT RÁC TRIỆT ĐỂ NHƯ CODE 1 ---
+    const allRunsInDoc = Array.from(doc.getElementsByTagName("w:r"));
     for (const r of allRunsInDoc) { getOrCreate(r, "w:rPr"); }
-    const allPPrsInDoc = Array.from(doc.getElementsByTagNameNS(W_NS, "pPr"));
+    const allPPrsInDoc = Array.from(doc.getElementsByTagName("w:pPr"));
     for (const pPr of allPPrsInDoc) { getOrCreate(pPr, "w:rPr"); }
 
-    const allRPrs = Array.from(doc.getElementsByTagNameNS(W_NS, "rPr"));
+    const allRPrs = Array.from(doc.getElementsByTagName("w:rPr"));
     for (const rPr of allRPrs) {
         const rFonts = getOrCreate(rPr, "w:rFonts");
-        rFonts.setAttributeNS(W_NS, "w:ascii", options.font.family);
-        rFonts.setAttributeNS(W_NS, "w:hAnsi", options.font.family);
-        rFonts.setAttributeNS(W_NS, "w:cs", options.font.family);
-        rFonts.setAttributeNS(W_NS, "w:eastAsia", options.font.family);
+        setAttr(rFonts, "ascii", options.font.family);
+        setAttr(rFonts, "hAnsi", options.font.family);
+        setAttr(rFonts, "cs", options.font.family);
+        setAttr(rFonts, "eastAsia", options.font.family);
         ["asciiTheme", "hAnsiTheme", "cstheme", "eastAsiaTheme"].forEach(theme => {
             rFonts.removeAttributeNS(W_NS, theme);
-            rFonts.removeAttribute(theme); 
+            rFonts.removeAttribute(theme);
+            rFonts.removeAttribute(`w:${theme}`);
         });
     }
 
@@ -800,7 +944,7 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
             const extDoc = parser.parseFromString(xmlContent, "application/xml");
             const getOrCreateExt = (parent: Element, tagName: string): Element => {
                 const localName = tagName.includes(":") ? tagName.split(":")[1] : tagName;
-                let child = parent.getElementsByTagNameNS(W_NS, localName)[0];
+                let child = parent.getElementsByTagName(tagName)[0];
                 if (!child) {
                     child = extDoc.createElementNS(W_NS, tagName);
                     if (tagName.endsWith("Pr") && parent.firstChild) {
@@ -812,33 +956,19 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
                 return child;
             };
             
-            const rPrsExt = Array.from(extDoc.getElementsByTagNameNS(W_NS, "rPr"));
+            const rPrsExt = Array.from(extDoc.getElementsByTagName("w:rPr"));
             for (const rPr of rPrsExt) {
                 const rFonts = getOrCreateExt(rPr, "w:rFonts");
-                rFonts.setAttributeNS(W_NS, "w:ascii", options.font.family);
-                rFonts.setAttributeNS(W_NS, "w:hAnsi", options.font.family);
-                rFonts.setAttributeNS(W_NS, "w:cs", options.font.family);
-                rFonts.setAttributeNS(W_NS, "w:eastAsia", options.font.family);
+                setAttr(rFonts, "ascii", options.font.family);
+                setAttr(rFonts, "hAnsi", options.font.family);
+                setAttr(rFonts, "cs", options.font.family);
+                setAttr(rFonts, "eastAsia", options.font.family);
                 ["asciiTheme", "hAnsiTheme", "cstheme", "eastAsiaTheme"].forEach(theme => {
                     rFonts.removeAttributeNS(W_NS, theme);
                     rFonts.removeAttribute(theme);
+                    rFonts.removeAttribute(`w:${theme}`);
                 });
             }
-
-            const rPrDefaults = Array.from(extDoc.getElementsByTagNameNS(W_NS, "rPrDefault"));
-            for (const rPrDef of rPrDefaults) {
-                const rPr = getOrCreateExt(rPrDef, "w:rPr");
-                const rFonts = getOrCreateExt(rPr, "w:rFonts");
-                rFonts.setAttributeNS(W_NS, "w:ascii", options.font.family);
-                rFonts.setAttributeNS(W_NS, "w:hAnsi", options.font.family);
-                rFonts.setAttributeNS(W_NS, "w:cs", options.font.family);
-                rFonts.setAttributeNS(W_NS, "w:eastAsia", options.font.family);
-                ["asciiTheme", "hAnsiTheme", "cstheme", "eastAsiaTheme"].forEach(theme => {
-                    rFonts.removeAttributeNS(W_NS, theme);
-                    rFonts.removeAttribute(theme);
-                });
-            }
-            
             enforceSchema(extDoc); 
             zip.file(filePath, serializer.serializeToString(extDoc));
         }
@@ -846,6 +976,26 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
 
     await modifyXmlFonts("word/styles.xml");
     await modifyXmlFonts("word/numbering.xml");
+
+    const sectPrs = Array.from(doc.getElementsByTagName("w:sectPr"));
+    for (const sPr of sectPrs) {
+        let titlePg = sPr.getElementsByTagName("w:titlePg")[0];
+        if (!titlePg) {
+            titlePg = doc.createElementNS(W_NS, "w:titlePg");
+            sPr.appendChild(titlePg);
+        }
+        
+        const headerRefs = Array.from(sPr.getElementsByTagName("w:headerReference"));
+        for (const hr of headerRefs) {
+            if (hr.getAttribute("w:type") === "default") {
+                sPr.removeChild(hr);
+            }
+        }
+        const newHdrRef = doc.createElementNS(W_NS, "w:headerReference");
+        setAttr(newHdrRef, "type", "default");
+        newHdrRef.setAttribute("r:id", "rIdCustomHdr");
+        sPr.appendChild(newHdrRef);
+    }
 
     enforceSchema(doc);
 
@@ -864,7 +1014,7 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
                 <w:instrText xml:space="preserve"> PAGE </w:instrText>
             </w:r>
             <w:r>
-                <w:rPr><w:rFonts w:ascii="${fontFamily}" w:hAnsi="${fontFamily}" w:cs="${fontFamily}" w:eastAsia="${fontFamily}"/><w:sz w:val="${fontSize}"/><w:szCs w:val="${fontSize}"/></w:rPr>
+                <w:rPr><w:rFonts w:ascii="${fontFamily}" w:hAnsi="${fontFamily}" w:cs="${fontFamily}" w:eastAsia="${fontFamily}"/><w:sz w:val="${fontSize}"/><w:szCs w:val="${fontSize}"/><w:noProof/></w:rPr>
                 <w:fldChar w:fldCharType="separate"/>
             </w:r>
             <w:r>
@@ -897,21 +1047,6 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
         zip.file("word/_rels/document.xml.rels", relsXml);
     }
 
-    const sectPrs = Array.from(doc.getElementsByTagNameNS(W_NS, "sectPr"));
-    const R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-    for (const sPr of sectPrs) {
-        getOrCreate(sPr, "w:titlePg");
-        const headerRefs = Array.from(sPr.getElementsByTagNameNS(W_NS, "headerReference"));
-        for (const hr of headerRefs) {
-            if (hr.getAttributeNS(W_NS, "type") === "default") sPr.removeChild(hr);
-        }
-        const newHdrRef = doc.createElementNS(W_NS, "w:headerReference");
-        newHdrRef.setAttributeNS(W_NS, "w:type", "default");
-        newHdrRef.setAttributeNS(R_NS, "r:id", "rIdCustomHdr");
-        if (sPr.firstChild) sPr.insertBefore(newHdrRef, sPr.firstChild);
-        else sPr.appendChild(newHdrRef);
-    }
-
     const newDocXml = serializer.serializeToString(doc);
     zip.file(docXmlPath, newDocXml);
     const generatedBlob = await zip.generateAsync({ type: "blob" });
@@ -922,12 +1057,10 @@ export const processDocx = async (file: File, options: DocxOptions = DEFAULT_OPT
   }
 };
 
-const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
-    const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const createHeaderTemplate = (doc: Document, options: any): Element => {
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
     const getOrCreate = (parent: Element, tagName: string): Element => {
-      const localName = tagName.includes(":") ? tagName.split(":")[1] : tagName;
-      let child = parent.getElementsByTagNameNS(W_NS, localName)[0];
+      let child = parent.getElementsByTagName(tagName)[0];
       if (!child) {
         child = doc.createElementNS(W_NS, tagName);
         if (tagName.endsWith("Pr") && parent.firstChild) {
@@ -952,25 +1085,24 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
         const p = createElement("w:p");
         const pPr = getOrCreate(p, "w:pPr");
         const jc = getOrCreate(pPr, "w:jc");
-        jc.setAttributeNS(W_NS, "w:val", "center");
+        setAttr(jc, "val", "center");
         const ind = getOrCreate(pPr, "w:ind");
-        ind.setAttributeNS(W_NS, "w:left", "0");
-        ind.setAttributeNS(W_NS, "w:right", "0");
-        ind.setAttributeNS(W_NS, "w:firstLine", "0");
-        ind.removeAttributeNS(W_NS, "hanging");
+        setAttr(ind, "left", "0");
+        setAttr(ind, "right", "0");
+        setAttr(ind, "firstLine", "0");
         const spacing = getOrCreate(pPr, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", "0");
-        spacing.setAttributeNS(W_NS, "w:after", "0");
-        spacing.setAttributeNS(W_NS, "w:line", "240"); 
-        spacing.setAttributeNS(W_NS, "w:lineRule", "auto");
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "0");
+        setAttr(spacing, "line", "240"); 
+        setAttr(spacing, "lineRule", "auto");
         const r = createElement("w:r");
         p.appendChild(r);
         const rPr = getOrCreate(r, "w:rPr");
         const sizeToUse = customSize ? customSize * 2 : options.font.sizeTable * 2;
         const sz = getOrCreate(rPr, "w:sz");
-        sz.setAttributeNS(W_NS, "w:val", String(sizeToUse));
+        setAttr(sz, "val", String(sizeToUse));
         const szCs = getOrCreate(rPr, "w:szCs");
-        szCs.setAttributeNS(W_NS, "w:val", String(sizeToUse));
+        setAttr(szCs, "val", String(sizeToUse));
         if (isBold) rPr.appendChild(createElement("w:b"));
         if (isItalic) rPr.appendChild(createElement("w:i"));
         const t = createElement("w:t");
@@ -983,25 +1115,24 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
         const p = createElement("w:p");
         const pPr = getOrCreate(p, "w:pPr");
         const jc = getOrCreate(pPr, "w:jc");
-        jc.setAttributeNS(W_NS, "w:val", "center");
+        setAttr(jc, "val", "center");
         const ind = getOrCreate(pPr, "w:ind");
-        ind.setAttributeNS(W_NS, "w:left", "0");
-        ind.setAttributeNS(W_NS, "w:right", "0");
-        ind.setAttributeNS(W_NS, "w:firstLine", "0");
-        ind.removeAttributeNS(W_NS, "hanging");
+        setAttr(ind, "left", "0");
+        setAttr(ind, "right", "0");
+        setAttr(ind, "firstLine", "0");
         const spacing = getOrCreate(pPr, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", "0");
-        spacing.setAttributeNS(W_NS, "w:after", "0");
-        spacing.setAttributeNS(W_NS, "w:line", "240"); 
-        spacing.setAttributeNS(W_NS, "w:lineRule", "auto");
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "0");
+        setAttr(spacing, "line", "240"); 
+        setAttr(spacing, "lineRule", "auto");
         const r = createElement("w:r");
         p.appendChild(r);
         const rPr = getOrCreate(r, "w:rPr");
         const sizeToUse = customSize ? customSize * 2 : options.font.sizeTable * 2;
         const sz = getOrCreate(rPr, "w:sz");
-        sz.setAttributeNS(W_NS, "w:val", String(sizeToUse));
+        setAttr(sz, "val", String(sizeToUse));
         const szCs = getOrCreate(rPr, "w:szCs");
-        szCs.setAttributeNS(W_NS, "w:val", String(sizeToUse));
+        setAttr(szCs, "val", String(sizeToUse));
         if (isBold) rPr.appendChild(createElement("w:b"));
         
         const t = createElement("w:t");
@@ -1015,10 +1146,10 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
         const p = createElement("w:p");
         const pPr = getOrCreate(p, "w:pPr");
         const spacing = getOrCreate(pPr, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", "0");
-        spacing.setAttributeNS(W_NS, "w:after", "0");
-        spacing.setAttributeNS(W_NS, "w:line", "2"); 
-        spacing.setAttributeNS(W_NS, "w:lineRule", "exact");
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "0");
+        setAttr(spacing, "line", "2"); 
+        setAttr(spacing, "lineRule", "exact");
         tc.appendChild(p);
     };
 
@@ -1026,15 +1157,15 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
         const tbl = createElement("w:tbl");
         const tblPr = getOrCreate(tbl, "w:tblPr");
         const jcTbl = getOrCreate(tblPr, "w:jc");
-        jcTbl.setAttributeNS(W_NS, "w:val", "center");
+        setAttr(jcTbl, "val", "center");
         const tblW = getOrCreate(tblPr, "w:tblW");
-        tblW.setAttributeNS(W_NS, "w:w", "1000");
-        tblW.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(tblW, "w", "1000");
+        setAttr(tblW, "type", "dxa");
         const tblLayout = getOrCreate(tblPr, "w:tblLayout");
-        tblLayout.setAttributeNS(W_NS, "w:type", "fixed");
+        setAttr(tblLayout, "type", "fixed");
         const tblGrid = getOrCreate(tbl, "w:tblGrid");
         const gridCol = createElement("w:gridCol");
-        gridCol.setAttributeNS(W_NS, "w:w", "1000");
+        setAttr(gridCol, "w", "1000");
         tblGrid.appendChild(gridCol);
         const tr = createElement("w:tr");
         tbl.appendChild(tr);
@@ -1042,30 +1173,30 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
         tr.appendChild(tc);
         const tcPr = getOrCreate(tc, "w:tcPr");
         const tcW = getOrCreate(tcPr, "w:tcW");
-        tcW.setAttributeNS(W_NS, "w:w", "1000");
-        tcW.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(tcW, "w", "1000");
+        setAttr(tcW, "type", "dxa");
         
         const tcMar = getOrCreate(tcPr, "w:tcMar");
         ["top", "bottom", "left", "right"].forEach(side => {
             const mar = getOrCreate(tcMar, `w:${side}`);
-            mar.setAttributeNS(W_NS, "w:w", "0");
-            mar.setAttributeNS(W_NS, "w:type", "dxa");
+            setAttr(mar, "w", "0");
+            setAttr(mar, "type", "dxa");
         });
 
         const tcBorders = getOrCreate(tcPr, "w:tcBorders");
         const top = getOrCreate(tcBorders, "w:top"); 
-        top.setAttributeNS(W_NS, "w:val", "single");
-        top.setAttributeNS(W_NS, "w:sz", "4"); 
-        top.setAttributeNS(W_NS, "w:space", "0");
-        top.setAttributeNS(W_NS, "w:color", "000000");
+        setAttr(top, "val", "single");
+        setAttr(top, "sz", "4"); 
+        setAttr(top, "space", "0");
+        setAttr(top, "color", "000000");
         const p = createElement("w:p");
         tc.appendChild(p);
         const pPr = getOrCreate(p, "w:pPr");
         const spacing = getOrCreate(pPr, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", "0");
-        spacing.setAttributeNS(W_NS, "w:after", "0");
-        spacing.setAttributeNS(W_NS, "w:line", "24"); 
-        spacing.setAttributeNS(W_NS, "w:lineRule", "exact");
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "0");
+        setAttr(spacing, "line", "24"); 
+        setAttr(spacing, "lineRule", "exact");
         return tbl;
     };
 
@@ -1073,15 +1204,15 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
         const tbl = createElement("w:tbl");
         const tblPr = getOrCreate(tbl, "w:tblPr");
         const jcTbl = getOrCreate(tblPr, "w:jc");
-        jcTbl.setAttributeNS(W_NS, "w:val", "center");
+        setAttr(jcTbl, "val", "center");
         const tblW = getOrCreate(tblPr, "w:tblW");
-        tblW.setAttributeNS(W_NS, "w:w", widthTwips);
-        tblW.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(tblW, "w", widthTwips);
+        setAttr(tblW, "type", "dxa");
         const tblLayout = getOrCreate(tblPr, "w:tblLayout");
-        tblLayout.setAttributeNS(W_NS, "w:type", "fixed");
+        setAttr(tblLayout, "type", "fixed");
         const tblGrid = getOrCreate(tbl, "w:tblGrid");
         const gridCol = createElement("w:gridCol");
-        gridCol.setAttributeNS(W_NS, "w:w", widthTwips);
+        setAttr(gridCol, "w", widthTwips);
         tblGrid.appendChild(gridCol);
         const tr = createElement("w:tr");
         tbl.appendChild(tr);
@@ -1089,30 +1220,30 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
         tr.appendChild(tc);
         const tcPr = getOrCreate(tc, "w:tcPr");
         const tcW = getOrCreate(tcPr, "w:tcW");
-        tcW.setAttributeNS(W_NS, "w:w", widthTwips);
-        tcW.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(tcW, "w", widthTwips);
+        setAttr(tcW, "type", "dxa");
 
         const tcMar = getOrCreate(tcPr, "w:tcMar");
         ["top", "bottom", "left", "right"].forEach(side => {
             const mar = getOrCreate(tcMar, `w:${side}`);
-            mar.setAttributeNS(W_NS, "w:w", "0");
-            mar.setAttributeNS(W_NS, "w:type", "dxa");
+            setAttr(mar, "w", "0");
+            setAttr(mar, "type", "dxa");
         });
 
         const tcBorders = getOrCreate(tcPr, "w:tcBorders");
         const top = getOrCreate(tcBorders, "w:top"); 
-        top.setAttributeNS(W_NS, "w:val", "single");
-        top.setAttributeNS(W_NS, "w:sz", "6"); 
-        top.setAttributeNS(W_NS, "w:space", "0");
-        top.setAttributeNS(W_NS, "w:color", "000000");
+        setAttr(top, "val", "single");
+        setAttr(top, "sz", "6"); 
+        setAttr(top, "space", "0");
+        setAttr(top, "color", "000000");
         const p = createElement("w:p");
         tc.appendChild(p);
         const pPr = getOrCreate(p, "w:pPr");
         const spacing = getOrCreate(pPr, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", "0");
-        spacing.setAttributeNS(W_NS, "w:after", "0");
-        spacing.setAttributeNS(W_NS, "w:line", "24"); 
-        spacing.setAttributeNS(W_NS, "w:lineRule", "exact");
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "0");
+        setAttr(spacing, "line", "24"); 
+        setAttr(spacing, "lineRule", "exact");
         return tbl;
     };
 
@@ -1121,22 +1252,22 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
     const tblBorders = getOrCreate(tblPr, "w:tblBorders");
     ["top", "left", "bottom", "right", "insideH", "insideV"].forEach(side => {
         const border = getOrCreate(tblBorders, `w:${side}`);
-        border.setAttributeNS(W_NS, "w:val", "none");
+        setAttr(border, "val", "none");
     });
     
     const tblLayout = getOrCreate(tblPr, "w:tblLayout");
-    tblLayout.setAttributeNS(W_NS, "w:type", "fixed");
+    setAttr(tblLayout, "type", "fixed");
 
     const tblW = getOrCreate(tblPr, "w:tblW");
-    tblW.setAttributeNS(W_NS, "w:w", "9350"); 
-    tblW.setAttributeNS(W_NS, "w:type", "dxa");
+    setAttr(tblW, "w", "9350"); 
+    setAttr(tblW, "type", "dxa");
 
     const tblGrid = getOrCreate(tbl, "w:tblGrid");
     const col1 = createElement("w:gridCol");
-    col1.setAttributeNS(W_NS, "w:w", "3800"); 
+    setAttr(col1, "w", "3800"); 
     tblGrid.appendChild(col1);
     const col2 = createElement("w:gridCol");
-    col2.setAttributeNS(W_NS, "w:w", "5550"); 
+    setAttr(col2, "w", "5550"); 
     tblGrid.appendChild(col2);
 
     const tr = createElement("w:tr");
@@ -1146,28 +1277,28 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
     tr.appendChild(tc1);
     const tc1Pr = getOrCreate(tc1, "w:tcPr");
     const tc1W = getOrCreate(tc1Pr, "w:tcW");
-    tc1W.setAttributeNS(W_NS, "w:w", "3800");
-    tc1W.setAttributeNS(W_NS, "w:type", "dxa");
+    setAttr(tc1W, "w", "3800");
+    setAttr(tc1W, "type", "dxa");
     
     const tc1Mar = getOrCreate(tc1Pr, "w:tcMar");
     ["top", "bottom", "left", "right"].forEach(side => {
         const mar = getOrCreate(tc1Mar, `w:${side}`);
-        mar.setAttributeNS(W_NS, "w:w", "0");
-        mar.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(mar, "w", "0");
+        setAttr(mar, "type", "dxa");
     });
     
     const tc2 = createElement("w:tc");
     tr.appendChild(tc2);
     const tc2Pr = getOrCreate(tc2, "w:tcPr");
     const tc2W = getOrCreate(tc2Pr, "w:tcW");
-    tc2W.setAttributeNS(W_NS, "w:w", "5550");
-    tc2W.setAttributeNS(W_NS, "w:type", "dxa");
+    setAttr(tc2W, "w", "5550");
+    setAttr(tc2W, "type", "dxa");
 
     const tc2Mar = getOrCreate(tc2Pr, "w:tcMar");
     ["top", "bottom", "left", "right"].forEach(side => {
         const mar = getOrCreate(tc2Mar, `w:${side}`);
-        mar.setAttributeNS(W_NS, "w:w", "0");
-        mar.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(mar, "w", "0");
+        setAttr(mar, "type", "dxa");
     });
 
     const docDate = options.documentDate ? new Date(options.documentDate) : new Date();
@@ -1190,6 +1321,13 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
             tc1.appendChild(createStyledP("*", false, false)); 
             tc1.appendChild(createStyledP(partySymbolStr, false, false));
 
+            if (options.isCongVan && options.congVanSummary) {
+                const summaryLines = options.congVanSummary.split('\n');
+                summaryLines.forEach((line: string) => {
+                    if (line.trim()) tc1.appendChild(createStyledP(line.trim(), false, false, 12));
+                });
+            }
+
             tc2.appendChild(createMottoP("ĐẢNG CỘNG SẢN VIỆT NAM", true, 13)); 
             appendSafeTable(tc2, createMottoLineTable("3400")); 
             tc2.appendChild(createStyledP("", false, false));
@@ -1203,6 +1341,13 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
             appendSafeTable(tc1, createShortLineTable()); 
             tc1.appendChild(createStyledP("", false, false));  
             tc1.appendChild(createStyledP("Số: ... /...", false, false)); 
+
+            if (options.isCongVan && options.congVanSummary) {
+                const summaryLines = options.congVanSummary.split('\n');
+                summaryLines.forEach((line: string) => {
+                    if (line.trim()) tc1.appendChild(createStyledP(line.trim(), false, false, 12));
+                });
+            }
 
             tc2.appendChild(createStyledP("CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", true, false, 13));
             tc2.appendChild(createMottoP("Độc lập - Tự do - Hạnh phúc", true, 13)); 
@@ -1226,6 +1371,13 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
             tc1.appendChild(createStyledP("", false, false));
             tc1.appendChild(createStyledP(schoolSymbolStr, false, false));
 
+            if (options.isCongVan && options.congVanSummary) {
+                const summaryLines = options.congVanSummary.split('\n');
+                summaryLines.forEach((line: string) => {
+                    if (line.trim()) tc1.appendChild(createStyledP(line.trim(), false, false, 12));
+                });
+            }
+
             tc2.appendChild(createStyledP("CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", true, false, 13));
             tc2.appendChild(createMottoP("Độc lập - Tự do - Hạnh phúc", true, 13)); 
             appendSafeTable(tc2, createMottoLineTable("3200")); 
@@ -1238,11 +1390,9 @@ const createHeaderTemplate = (doc: Document, options: DocxOptions): Element => {
 };
 
 const createSignatureBlock = (doc: Document, options: any, docType: string): Element => {
-    const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
     const getOrCreate = (parent: Element, tagName: string): Element => {
-      const localName = tagName.includes(":") ? tagName.split(":")[1] : tagName;
-      let child = parent.getElementsByTagNameNS(W_NS, localName)[0];
+      let child = parent.getElementsByTagName(tagName)[0];
       if (!child) {
         child = doc.createElementNS(W_NS, tagName);
         if (tagName.endsWith("Pr") && parent.firstChild) {
@@ -1267,36 +1417,35 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
         const p = createElement("w:p");
         const pPr = getOrCreate(p, "w:pPr");
         const jc = getOrCreate(pPr, "w:jc");
-        jc.setAttributeNS(W_NS, "w:val", align);
+        setAttr(jc, "val", align);
         const ind = getOrCreate(pPr, "w:ind");
-        ind.setAttributeNS(W_NS, "w:left", "0");
-        ind.setAttributeNS(W_NS, "w:right", "0");
-        ind.setAttributeNS(W_NS, "w:firstLine", "0");
-        ind.removeAttributeNS(W_NS, "hanging");
+        setAttr(ind, "left", "0");
+        setAttr(ind, "right", "0");
+        setAttr(ind, "firstLine", "0");
         const spacing = getOrCreate(pPr, "w:spacing");
-        spacing.setAttributeNS(W_NS, "w:before", "0");
-        spacing.setAttributeNS(W_NS, "w:after", "0");
-        spacing.setAttributeNS(W_NS, "w:line", "240"); 
-        spacing.setAttributeNS(W_NS, "w:lineRule", "auto"); 
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "0");
+        setAttr(spacing, "line", "240"); 
+        setAttr(spacing, "lineRule", "auto"); 
         const r = createElement("w:r");
         p.appendChild(r);
         const rPr = getOrCreate(r, "w:rPr");
         const sizeToUse = customSize ? customSize * 2 : options.font?.sizeTable * 2 || 26;
         const sz = getOrCreate(rPr, "w:sz");
-        sz.setAttributeNS(W_NS, "w:val", String(sizeToUse)); 
+        setAttr(sz, "val", String(sizeToUse)); 
         const szCs = getOrCreate(rPr, "w:szCs");
-        szCs.setAttributeNS(W_NS, "w:val", String(sizeToUse));
+        setAttr(szCs, "val", String(sizeToUse));
         if (isBold) {
             const b = getOrCreate(rPr, "w:b");
-            b.setAttributeNS(W_NS, "w:val", "true");
+            setAttr(b, "val", "true");
         }
         if (isItalic) {
             const i = getOrCreate(rPr, "w:i");
-            i.setAttributeNS(W_NS, "w:val", "true");
+            setAttr(i, "val", "true");
         }
         if (isUnderline) {
             const u = getOrCreate(rPr, "w:u");
-            u.setAttributeNS(W_NS, "w:val", "single");
+            setAttr(u, "val", "single");
         }
         const t = createElement("w:t");
         t.textContent = text;
@@ -1309,15 +1458,15 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
     const tblBorders = getOrCreate(tblPr, "w:tblBorders");
     ["top", "left", "bottom", "right", "insideH", "insideV"].forEach(side => {
         const border = getOrCreate(tblBorders, `w:${side}`);
-        border.setAttributeNS(W_NS, "w:val", "none");
+        setAttr(border, "val", "none");
     });
     
     const tblLayout = getOrCreate(tblPr, "w:tblLayout");
-    tblLayout.setAttributeNS(W_NS, "w:type", "fixed");
+    setAttr(tblLayout, "type", "fixed");
 
     const tblW = getOrCreate(tblPr, "w:tblW");
-    tblW.setAttributeNS(W_NS, "w:w", "9350");
-    tblW.setAttributeNS(W_NS, "w:type", "dxa"); 
+    setAttr(tblW, "w", "9350");
+    setAttr(tblW, "type", "dxa"); 
 
     const isMinutes = (docType && docType.toUpperCase().includes("BIÊN BẢN")) || options.isMinutes === true;
     
@@ -1326,10 +1475,10 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
 
     const tblGrid = getOrCreate(tbl, "w:tblGrid");
     const col1 = createElement("w:gridCol");
-    col1.setAttributeNS(W_NS, "w:w", w1);
+    setAttr(col1, "w", w1);
     tblGrid.appendChild(col1);
     const col2 = createElement("w:gridCol");
-    col2.setAttributeNS(W_NS, "w:w", w2);
+    setAttr(col2, "w", w2);
     tblGrid.appendChild(col2);
 
     const tr = createElement("w:tr");
@@ -1339,28 +1488,28 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
     tr.appendChild(tc1);
     const tc1Pr = getOrCreate(tc1, "w:tcPr");
     const tc1W = getOrCreate(tc1Pr, "w:tcW");
-    tc1W.setAttributeNS(W_NS, "w:w", w1);
-    tc1W.setAttributeNS(W_NS, "w:type", "dxa");
+    setAttr(tc1W, "w", w1);
+    setAttr(tc1W, "type", "dxa");
     
     const tc1Mar = getOrCreate(tc1Pr, "w:tcMar");
     ["top", "bottom", "left", "right"].forEach(side => {
         const mar = getOrCreate(tc1Mar, `w:${side}`);
-        mar.setAttributeNS(W_NS, "w:w", "0");
-        mar.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(mar, "w", "0");
+        setAttr(mar, "type", "dxa");
     });
 
     const tc2 = createElement("w:tc");
     tr.appendChild(tc2);
     const tc2Pr = getOrCreate(tc2, "w:tcPr");
     const tc2W = getOrCreate(tc2Pr, "w:tcW");
-    tc2W.setAttributeNS(W_NS, "w:w", w2);
-    tc2W.setAttributeNS(W_NS, "w:type", "dxa");
+    setAttr(tc2W, "w", w2);
+    setAttr(tc2W, "type", "dxa");
     
     const tc2Mar = getOrCreate(tc2Pr, "w:tcMar");
     ["top", "bottom", "left", "right"].forEach(side => {
         const mar = getOrCreate(tc2Mar, `w:${side}`);
-        mar.setAttributeNS(W_NS, "w:w", "0");
-        mar.setAttributeNS(W_NS, "w:type", "dxa");
+        setAttr(mar, "w", "0");
+        setAttr(mar, "type", "dxa");
     });
 
     const signerTitle = options.signerTitle ? options.signerTitle.trim().toUpperCase() : "";
