@@ -20,7 +20,9 @@ const DEFAULT_OPTIONS: any = {
   paragraph: { lineSpacing: 1.15, after: 6, indent: 1.27 },
   table: { rowHeight: 0.8 },
   isCongVan: false,
-  congVanSummary: ""
+  congVanSummary: "",
+  approverTitle: "",
+  approverName: ""
 };
 
 const ACRONYMS_LIST = [
@@ -230,6 +232,91 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
+    // === SMART ERASER ===
+    if (options.headerType !== HeaderType.NONE) {
+        const headTables = Array.from(doc.getElementsByTagName("w:tbl"));
+        if (headTables.length === 0) headTables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
+        
+        for (let i = 0; i < Math.min(4, headTables.length); i++) {
+            const tbl = headTables[i];
+            if (!tbl.parentNode) continue;
+            const text = tbl.textContent?.toUpperCase() || "";
+            if ((text.includes("CỘNG HÒA") || text.includes("ĐỘC LẬP") || text.includes("ĐẢNG CỘNG SẢN") || text.includes("UBND") || text.includes("SỞ ") || text.includes("TRƯỜNG ") || text.includes("TỔ ")) && text.length < 400) {
+                tbl.parentNode.removeChild(tbl);
+            }
+        }
+        
+        const headParagraphs = Array.from(doc.getElementsByTagName("w:p"));
+        if (headParagraphs.length === 0) headParagraphs.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
+        
+        for (let i = 0; i < Math.min(20, headParagraphs.length); i++) {
+            const p = headParagraphs[i];
+            if (!p.parentNode || isTableParagraph(p)) continue;
+            const text = p.textContent?.trim().toUpperCase() || "";
+            
+            if (DOC_TYPE_KEYWORDS.some(k => text.startsWith(k))) break; 
+            
+            if (text.startsWith("SỐ:") || text.startsWith("SỐ ") || (text.includes("NGÀY") && text.includes("THÁNG") && text.includes("NĂM") && text.length < 100) || text.length === 0) {
+                p.parentNode.removeChild(p);
+            }
+        }
+    }
+
+    const tailTables = Array.from(doc.getElementsByTagName("w:tbl"));
+    if (tailTables.length === 0) tailTables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
+    
+    for (let i = tailTables.length - 1; i >= Math.max(0, tailTables.length - 5); i--) {
+        const tbl = tailTables[i];
+        if (!tbl.parentNode) continue;
+        const text = tbl.textContent?.toUpperCase() || "";
+        if ((text.includes("NƠI NHẬN") || text.includes("HIỆU TRƯỞNG") || text.includes("GIÁM ĐỐC") || text.includes("CHỦ TỊCH") || text.includes("CHỦ TỌA") || text.includes("THƯ KÝ") || text.includes("TỔ TRƯỞNG")) && text.length < 1000) {
+            tbl.parentNode.removeChild(tbl);
+        }
+    }
+
+    const tailParagraphs = Array.from(doc.getElementsByTagName("w:p"));
+    if (tailParagraphs.length === 0) tailParagraphs.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
+    
+    let stopTailScan = false;
+    const signatureKeywords = [
+        "NƠI NHẬN", "HIỆU TRƯỞNG", "GIÁM ĐỐC", "CHỦ TỊCH", "CHỦ TỌA", "THƯ KÝ", 
+        "TỔ TRƯỞNG", "BÍ THƯ", "KT.", "TM.", "T/M", "LƯU:", "LƯU VT", "NGƯỜI LẬP", "NGƯỜI VIẾT"
+    ];
+
+    for (let i = tailParagraphs.length - 1; i >= Math.max(0, tailParagraphs.length - 40); i--) {
+        if (stopTailScan) break;
+        const p = tailParagraphs[i];
+        if (!p.parentNode || isTableParagraph(p)) continue;
+        
+        const text = p.textContent?.trim() || "";
+        const upperText = text.toUpperCase();
+        
+        const hasMedia = p.getElementsByTagName("w:drawing").length > 0 || 
+                         p.getElementsByTagName("w:pict").length > 0 || 
+                         p.getElementsByTagName("w:object").length > 0 || 
+                         p.getElementsByTagName("w:sectPr").length > 0;
+                         
+        if (upperText.length === 0 && !hasMedia) {
+             p.parentNode.removeChild(p);
+             continue;
+        }
+        if (hasMedia) {
+             stopTailScan = true;
+             continue;
+        }
+
+        const isSigKeyword = signatureKeywords.some(k => upperText.includes(k));
+        const isBulletItem = (upperText.startsWith("-") || upperText.startsWith("+") || upperText.startsWith("•")) && text.length < 80;
+        const isShortNameOrDate = text.length < 40 && !upperText.includes(":") && !upperText.match(/^[0-9IVX]+\./);
+
+        if (isSigKeyword || isBulletItem || isShortNameOrDate) {
+            p.parentNode.removeChild(p);
+        } else {
+            stopTailScan = true; 
+        }
+    }
+    // === KẾT THÚC SMART ERASER ===
+
     if (options.removeNumbering) {
         const allParagraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
         for (const p of allParagraphs) {
@@ -403,8 +490,8 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         p.appendChild(pPr);
         const spacing = doc.createElementNS(W_NS, "w:spacing");
         setAttr(spacing, "before", "0");
-        setAttr(spacing, "after", "120"); // Lớp đệm 6pt mượt mà phía dưới
-        setAttr(spacing, "line", "24"); 
+        setAttr(spacing, "after", "120"); 
+        setAttr(spacing, "line", "2"); 
         setAttr(spacing, "lineRule", "exact");
         pPr.appendChild(spacing);
         tc.appendChild(p);
@@ -426,7 +513,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         ind.removeAttribute("w:hanging");
         const spacing = getOrCreate(pPr, "w:spacing");
         setAttr(spacing, "before", "0");
-        setAttr(spacing, "after", "120"); // Lớp đệm 6pt
+        setAttr(spacing, "after", "120"); 
         setAttr(spacing, "line", "240"); 
         setAttr(spacing, "lineRule", "auto");
         const r = doc.createElementNS(W_NS, "w:r");
@@ -536,40 +623,47 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
             summaryParagraphs.forEach(sp => abstractElements.add(sp));
 
-            // PHỤC HỒI ĐƯỜNG KẺ NGANG TRỞ LẠI & DỌN DẸP KHOẢNG TRỐNG
             if (!options.isCongVan) {
                 const targetNode = summaryParagraphs.length > 0 ? summaryParagraphs[summaryParagraphs.length - 1] : p;
                 
-                // --- TÍNH NĂNG BẮN TỈA: XÓA DÒNG TRỐNG THỪA NGAY DƯỚI TRÍCH YẾU ---
                 let nextNode = targetNode.nextSibling;
-                while (nextNode && (nextNode.nodeName === "w:p" || nextNode.nodeName === "p")) {
-                    const el = nextNode as Element;
-                    const textNodes = Array.from(el.getElementsByTagName("w:t")).concat(Array.from(el.getElementsByTagNameNS(W_NS, "t")));
-                    const text = textNodes.map(n => n.textContent || "").join("").trim();
-                    
-                    const hasDrawing = el.getElementsByTagName("w:drawing").length > 0 || el.getElementsByTagNameNS(W_NS, "drawing").length > 0;
-                    const hasPict = el.getElementsByTagName("w:pict").length > 0 || el.getElementsByTagNameNS(W_NS, "pict").length > 0;
-                    const hasObject = el.getElementsByTagName("w:object").length > 0 || el.getElementsByTagNameNS(W_NS, "object").length > 0;
-                    const hasSectPr = el.getElementsByTagName("w:sectPr").length > 0 || el.getElementsByTagNameNS(W_NS, "sectPr").length > 0;
-                    
-                    let hasPageBreak = false;
-                    const brs = Array.from(el.getElementsByTagName("w:br")).concat(Array.from(el.getElementsByTagNameNS(W_NS, "br")));
-                    for (const br of brs) {
-                        if (br.getAttribute("w:type") === "page" || br.getAttributeNS(W_NS, "type") === "page") {
-                            hasPageBreak = true;
+                while (nextNode) {
+                    const nodeName = nextNode.nodeName;
+                    if (nodeName === "w:p" || nodeName === "p") {
+                        const el = nextNode as Element;
+                        const textNodes = Array.from(el.getElementsByTagName("w:t")).concat(Array.from(el.getElementsByTagNameNS(W_NS, "t")));
+                        const text = textNodes.map(n => n.textContent || "").join("").trim();
+                        
+                        let hasPageBreak = false;
+                        const brs = Array.from(el.getElementsByTagName("w:br")).concat(Array.from(el.getElementsByTagNameNS(W_NS, "br")));
+                        for (const br of brs) {
+                            if (br.getAttribute("w:type") === "page" || br.getAttributeNS(W_NS, "type") === "page") {
+                                hasPageBreak = true;
+                                break;
+                            }
+                        }
+                        
+                        if (text.length === 0 && !hasPageBreak) {
+                            const toDelete = nextNode;
+                            nextNode = nextNode.nextSibling; 
+                            toDelete.parentNode?.removeChild(toDelete); 
+                        } else {
+                            break; 
+                        }
+                    } else if (nodeName === "w:tbl" || nodeName === "tbl") {
+                        const el = nextNode as Element;
+                        const text = el.textContent?.trim() || "";
+                        if (text.length === 0) {
+                            const toDelete = nextNode;
+                            nextNode = nextNode.nextSibling;
+                            toDelete.parentNode?.removeChild(toDelete);
+                        } else {
                             break;
                         }
-                    }
-                    
-                    if (text.length === 0 && !hasDrawing && !hasPict && !hasObject && !hasSectPr && !hasPageBreak) {
-                        const toDelete = nextNode;
-                        nextNode = nextNode.nextSibling; // Chuyển sang soi dòng kế tiếp
-                        toDelete.parentNode?.removeChild(toDelete); // Tiêu diệt dòng trống
                     } else {
-                        break; // Có chữ hoặc ảnh thì ngừng xóa
+                        nextNode = nextNode.nextSibling;
                     }
                 }
-                // -------------------------------------------------------------
 
                 if (options.headerType === HeaderType.PARTY) {
                     const dashP = createPartyDashLine(protectedElements);
@@ -599,7 +693,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       const trimmedPText = pText.trim();
       const upperText = trimmedPText.toUpperCase();
 
-      // CẢM BIẾN CHỮ KÝ (Khóa phần đuôi không dọn rác)
       if (isBodyArea && trimmedPText.length > 0) {
           if (
               upperText.startsWith("NƠI NHẬN:") || 
@@ -626,7 +719,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
       const isTable = isTableParagraph(p);
 
-      // CẢM BIẾN DỌN RÁC PHẦN THÂN
       if (isBodyArea && trimmedPText.length === 0 && !isTable) {
           const hasDrawing = p.getElementsByTagName("w:drawing").length > 0 || p.getElementsByTagNameNS(W_NS, "drawing").length > 0;
           const hasPict = p.getElementsByTagName("w:pict").length > 0 || p.getElementsByTagNameNS(W_NS, "pict").length > 0;
@@ -1562,17 +1654,30 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
     const presiderName = options.presiderName ? options.presiderName.trim() : "";
     const secretaryName = options.secretaryName ? options.secretaryName.trim() : "";
 
+    // --- HÀM TRỢ GIÚP: Sinh dòng trống linh hoạt ---
+    const addBlankLines = (tc: Element, count: number) => {
+        for (let i = 0; i < count; i++) {
+            tc.appendChild(createTightP("", false, false, false, "center", 14));
+        }
+    };
+
+    // --- BỘ LỌC ĐÓNG DẤU: Trả về 5 dòng nếu có dấu tròn, 3 dòng nếu ký thường ---
+    const getBlankLinesForStamp = (title: string): number => {
+        const t = title.toUpperCase();
+        if (["HIỆU TRƯỞNG", "CHỦ TỊCH", "GIÁM ĐỐC", "TRƯỞNG PHÒNG", "BÍ THƯ", "TRƯỞNG BAN"].some(k => t.includes(k))) {
+            return 5; 
+        }
+        return 3; 
+    };
+
+    // === XỬ LÝ KHỐI CHỮ KÝ ===
     if (isMinutes) {
         tc1.appendChild(createTightP("THƯ KÝ", true, false, false, "center", 14));
-        tc1.appendChild(createTightP("", false, false, false, "center", 14));
-        tc1.appendChild(createTightP("", false, false, false, "center", 14));
-        tc1.appendChild(createTightP("", false, false, false, "center", 14));
+        addBlankLines(tc1, 3);
         if (secretaryName) tc1.appendChild(createTightP(secretaryName, true, false, false, "center", 14));
 
         tc2.appendChild(createTightP("CHỦ TỌA", true, false, false, "center", 14));
-        tc2.appendChild(createTightP("", false, false, false, "center", 14));
-        tc2.appendChild(createTightP("", false, false, false, "center", 14));
-        tc2.appendChild(createTightP("", false, false, false, "center", 14));
+        addBlankLines(tc2, getBlankLinesForStamp("CHỦ TỌA")); // Thường là 3
         if (presiderName) tc2.appendChild(createTightP(presiderName, true, false, false, "center", 14));
     } else {
         switch (options.headerType) {
@@ -1585,24 +1690,43 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
                 tc1.appendChild(createTightP("- Lưu HSCB.", false, false, false, "left", 12));
 
                 tc2.appendChild(createTightP("T/M CHI BỘ", true, false, false, "center", 14));
-                tc2.appendChild(createTightP(signerTitle || "BÍ THƯ", true, false, false, "center", 14));
-                tc2.appendChild(createTightP("", false, false, false, "center", 14));
-                tc2.appendChild(createTightP("", false, false, false, "center", 14));
-                tc2.appendChild(createTightP("", false, false, false, "center", 14));
+                const sTitleParty = signerTitle || "BÍ THƯ";
+                tc2.appendChild(createTightP(sTitleParty, true, false, false, "center", 14));
+                addBlankLines(tc2, getBlankLinesForStamp(sTitleParty));
                 if (signerName) tc2.appendChild(createTightP(signerName, true, false, false, "center", 14));
                 break;
+
             case HeaderType.DEPARTMENT:
+                const approverTitle = options.approverTitle || "";
+                const approverName = options.approverName || "";
+
+                if (approverTitle || approverName) {
+                    const actualApprTitle = approverTitle || "HIỆU TRƯỞNG";
+                    tc1.appendChild(createTightP("DUYỆT CỦA HIỆU TRƯỞNG", true, false, false, "center", 14));
+
+                    if (actualApprTitle.includes("PHÓ")) {
+                        tc1.appendChild(createTightP("KT. HIỆU TRƯỞNG", true, false, false, "center", 14));
+                        tc1.appendChild(createTightP("PHÓ HIỆU TRƯỞNG", true, false, false, "center", 14));
+                        addBlankLines(tc1, 4); // Bớt 1 dòng bù trừ
+                    } else {
+                        addBlankLines(tc1, 5); // 5 dòng cho dấu tròn
+                    }
+                    if (approverName) tc1.appendChild(createTightP(approverName, true, false, false, "center", 14));
+                    
+                    tc1.appendChild(createTightP("", false, false, false, "center", 14)); // Dòng rỗng ngăn cách Nơi nhận
+                }
+
                 tc1.appendChild(createTightP("Nơi nhận:", true, true, false, "left", 12));
                 tc1.appendChild(createTightP(`- Lãnh đạo ${org.orgName} (b/c);`, false, false, false, "left", 11));
                 tc1.appendChild(createTightP("- Thành viên Tổ (t/h);", false, false, false, "left", 11));
                 tc1.appendChild(createTightP("- Lưu HSTCM.", false, false, false, "left", 11));
 
-                tc2.appendChild(createTightP(signerTitle || "TỔ TRƯỞNG", true, false, false, "center", 14));
-                tc2.appendChild(createTightP("", false, false, false, "center", 14));
-                tc2.appendChild(createTightP("", false, false, false, "center", 14));
-                tc2.appendChild(createTightP("", false, false, false, "center", 14));
+                const sTitleDep = signerTitle || "TỔ TRƯỞNG";
+                tc2.appendChild(createTightP(sTitleDep, true, false, false, "center", 14));
+                addBlankLines(tc2, getBlankLinesForStamp(sTitleDep)); // Tổ trưởng = 3 dòng
                 if (signerName) tc2.appendChild(createTightP(signerName, true, false, false, "center", 14));
                 break;
+
             case HeaderType.SCHOOL:
             default:
                 tc1.appendChild(createTightP("Nơi nhận:", true, true, false, "left", 12));
@@ -1613,15 +1737,16 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
                 tc1.appendChild(createTightP("- Giáo viên, nhân viên (t/h);", false, false, false, "left", 11));
                 tc1.appendChild(createTightP("- Lưu VT, EDOC.", false, false, false, "left", 11));
 
-                if (signerTitle === "PHÓ HIỆU TRƯỞNG") {
-                    tc2.appendChild(createTightP("KT. HIỆU TRƯỞNG", true, false, false, "center", 14));
-                    tc2.appendChild(createTightP("PHÓ HIỆU TRƯỞNG", true, false, false, "center", 14));
+                const sTitleSchool = signerTitle || "HIỆU TRƯỞNG";
+                if (sTitleSchool.includes("PHÓ")) {
+                    const baseTitle = sTitleSchool.replace("PHÓ ", "");
+                    tc2.appendChild(createTightP(`KT. ${baseTitle}`, true, false, false, "center", 14));
+                    tc2.appendChild(createTightP(sTitleSchool, true, false, false, "center", 14));
+                    addBlankLines(tc2, getBlankLinesForStamp(sTitleSchool) - 1);
                 } else {
-                    tc2.appendChild(createTightP(signerTitle || "HIỆU TRƯỞNG", true, false, false, "center", 14));
+                    tc2.appendChild(createTightP(sTitleSchool, true, false, false, "center", 14));
+                    addBlankLines(tc2, getBlankLinesForStamp(sTitleSchool));
                 }
-                tc2.appendChild(createTightP("", false, false, false, "center", 14));
-                tc2.appendChild(createTightP("", false, false, false, "center", 14));
-                tc2.appendChild(createTightP("", false, false, false, "center", 14));
                 if (signerName) tc2.appendChild(createTightP(signerName, true, false, false, "center", 14));
                 break;
         }
