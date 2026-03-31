@@ -215,6 +215,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       return false;
     };
 
+    // BƯỚC 1: Dọn text trắng (Trim) - KHÔNG XÓA DÒNG Ở ĐÂY ĐỂ BẢO VỆ CẤU TRÚC
     const paragraphsForCleaning = Array.from(doc.getElementsByTagName("w:p"));
     if (paragraphsForCleaning.length === 0) paragraphsForCleaning.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
 
@@ -228,32 +229,9 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             const lastNode = textNodes[textNodes.length - 1];
             if (lastNode.textContent) lastNode.textContent = lastNode.textContent.trimEnd();
         }
-        
-        const fullText = textNodes.map(n => n.textContent || "").join("");
-        
-        const hasDrawing = p.getElementsByTagName("w:drawing").length > 0 || p.getElementsByTagNameNS(W_NS, "drawing").length > 0;
-        const hasPict = p.getElementsByTagName("w:pict").length > 0 || p.getElementsByTagNameNS(W_NS, "pict").length > 0;
-        const hasObject = p.getElementsByTagName("w:object").length > 0 || p.getElementsByTagNameNS(W_NS, "object").length > 0;
-        const hasSectPr = p.getElementsByTagName("w:sectPr").length > 0 || p.getElementsByTagNameNS(W_NS, "sectPr").length > 0;
-        
-        let hasPageBreak = false;
-        const brs = Array.from(p.getElementsByTagName("w:br")).concat(Array.from(p.getElementsByTagNameNS(W_NS, "br")));
-        for (const br of brs) {
-            if (br.getAttribute("w:type") === "page" || br.getAttributeNS(W_NS, "type") === "page") {
-                hasPageBreak = true;
-                break;
-            }
-        }
-        
-        const hasContent = hasDrawing || hasPict || hasObject || hasSectPr || hasPageBreak;
-        
-        if (!hasContent && fullText.length === 0) {
-            if (!isTableParagraph(p)) {
-                p.parentNode?.removeChild(p);
-            }
-        }
     }
 
+    // XÓA NUMBERING
     if (options.removeNumbering) {
         const allParagraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
         for (const p of allParagraphs) {
@@ -277,7 +255,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    // --- CẬP NHẬT KÍCH THƯỚC TRANG VÀ LỀ TRANG (BẢO TỒN LANDSCAPE) ---
+    // ÉP KHỔ A4 NHƯNG BẢO TỒN CHIỀU NGANG (LANDSCAPE PROTECTOR)
     let sectPrsDoc = Array.from(doc.getElementsByTagName("w:sectPr"));
     if (sectPrsDoc.length === 0) sectPrsDoc = Array.from(doc.getElementsByTagNameNS(W_NS, "sectPr"));
 
@@ -297,13 +275,12 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         const h = parseInt(hStr || "0");
         const isLandscape = orient === "landscape" || w > h;
 
-        // Ép khổ giấy về A4 nhưng giữ nguyên chiều ngang/dọc
         if (isLandscape) {
-            setAttr(pgSz, "w", "16838"); // A4 Ngang
+            setAttr(pgSz, "w", "16838"); 
             setAttr(pgSz, "h", "11906");
             setAttr(pgSz, "orient", "landscape");
         } else {
-            setAttr(pgSz, "w", "11906"); // A4 Dọc
+            setAttr(pgSz, "w", "11906"); 
             setAttr(pgSz, "h", "16838");
             pgSz.removeAttributeNS(W_NS, "orient");
             pgSz.removeAttribute("w:orient");
@@ -312,7 +289,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         let pgMar = Array.from(sectPr.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pgMar") as Element;
         if (!pgMar) {
             pgMar = doc.createElementNS(W_NS, "w:pgMar");
-            sectPr.insertBefore(pgMar, pgSz.nextSibling); // Đảm bảo đúng trật tự XML
+            sectPr.insertBefore(pgMar, pgSz.nextSibling); 
         }
         
         setAttr(pgMar, "top", String(Math.round(options.margins.top * TWIPS_PER_CM)));
@@ -574,7 +551,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
             summaryParagraphs.forEach(sp => abstractElements.add(sp));
 
-            // --- PHỤC HỒI ĐƯỜNG KẺ NGANG TRỞ LẠI ---
+            // PHỤC HỒI ĐƯỜNG KẺ NGANG TRỞ LẠI
             if (!options.isCongVan) {
                 const targetNode = summaryParagraphs.length > 0 ? summaryParagraphs[summaryParagraphs.length - 1] : p;
                 if (options.headerType === HeaderType.PARTY) {
@@ -597,16 +574,77 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
     let inKinhGuiBlock = false;
     let addSpaceBeforeMainContent = false;
 
+    // --- CÁC CỜ KIỂM SOÁT VÙNG DỌN DẸP THÂN VĂN BẢN ---
+    let hasStartedBodyContent = false; // Bắt đầu khi gặp chữ thật ở phần thân (Mở khóa trên)
+    let hasReachedSignature = false;   // Bật khi chạm đến vùng chữ ký/nơi nhận (Đóng khóa dưới)
+
     for (const p of finalParagraphs) {
       if (docTypeElements.has(p) || abstractElements.has(p) || protectedElements.has(p)) continue; 
       
-      const isTable = isTableParagraph(p);
-      if (isTable) continue; 
-      
-      const pPr = getOrCreate(p, "w:pPr");
       const pText = p.textContent || "";
       const trimmedPText = pText.trim();
       const upperText = trimmedPText.toUpperCase();
+
+      // 1. CẢM BIẾN CHỮ KÝ (Khóa Đuôi) - Hoạt động quét mọi dòng có chữ (kể cả trong bảng)
+      if (!hasReachedSignature && trimmedPText.length > 0) {
+          if (
+              upperText.startsWith("NƠI NHẬN:") || 
+              upperText === "NƠI NHẬN" ||
+              (trimmedPText.length < 40 && (
+                  upperText.includes("HIỆU TRƯỞNG") ||
+                  upperText.includes("GIÁM ĐỐC") ||
+                  upperText.includes("CHỦ TỊCH") ||
+                  upperText.includes("BÍ THƯ") ||
+                  upperText.includes("BỘ TRƯỞNG") ||
+                  upperText.startsWith("KT. ") ||
+                  upperText.startsWith("TM. ") ||
+                  upperText.startsWith("T/M ") ||
+                  upperText === "THỦ TRƯỞNG ĐƠN VỊ" ||
+                  upperText === "CHỦ TỌA" ||
+                  upperText === "THƯ KÝ" ||
+                  upperText === "NGƯỜI LẬP" ||
+                  upperText === "NGƯỜI VIẾT"
+              ))
+          ) {
+              hasReachedSignature = true; 
+          }
+      }
+
+      const isTable = isTableParagraph(p);
+
+      // 2. CẢM BIẾN BẮT ĐẦU THÂN (Mở Khóa Trên) - Bỏ qua các bảng biểu
+      if (!hasStartedBodyContent && trimmedPText.length > 0 && !hasReachedSignature && !isTable) {
+          hasStartedBodyContent = true;
+      }
+
+      // 3. THỰC THI SMART BODY CLEANER (Chỉ xóa dòng trống ở thân, không đụng chạm đến đầu/đuôi và bảng biểu)
+      if (hasStartedBodyContent && !hasReachedSignature && trimmedPText.length === 0 && !isTable) {
+          const hasDrawing = p.getElementsByTagName("w:drawing").length > 0 || p.getElementsByTagNameNS(W_NS, "drawing").length > 0;
+          const hasPict = p.getElementsByTagName("w:pict").length > 0 || p.getElementsByTagNameNS(W_NS, "pict").length > 0;
+          const hasObject = p.getElementsByTagName("w:object").length > 0 || p.getElementsByTagNameNS(W_NS, "object").length > 0;
+          const hasSectPr = p.getElementsByTagName("w:sectPr").length > 0 || p.getElementsByTagNameNS(W_NS, "sectPr").length > 0;
+          
+          let hasPageBreak = false;
+          const brs = Array.from(p.getElementsByTagName("w:br")).concat(Array.from(p.getElementsByTagNameNS(W_NS, "br")));
+          for (const br of brs) {
+              if (br.getAttribute("w:type") === "page" || br.getAttributeNS(W_NS, "type") === "page") {
+                  hasPageBreak = true;
+                  break;
+              }
+          }
+          
+          const hasContent = hasDrawing || hasPict || hasObject || hasSectPr || hasPageBreak;
+          
+          if (!hasContent) {
+              p.parentNode?.removeChild(p);
+              continue; // Xóa xong thì Next luôn, không cần định dạng đoạn trống này nữa
+          }
+      }
+
+      if (isTable) continue; 
+      // =========================================================================
+
+      const pPr = getOrCreate(p, "w:pPr");
 
       if (options.isCongVan) {
           if (upperText.startsWith("KÍNH GỬI:") || upperText === "KÍNH GỬI") {
@@ -917,7 +955,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    // --- PHỤC HỒI: DỌN SẠCH FONT RÁC TRIỆT ĐỂ NHƯ CODE 1 ---
     const allRunsInDoc = Array.from(doc.getElementsByTagName("w:r"));
     for (const r of allRunsInDoc) { getOrCreate(r, "w:rPr"); }
     const allPPrsInDoc = Array.from(doc.getElementsByTagName("w:pPr"));
