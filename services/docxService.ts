@@ -215,7 +215,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       return false;
     };
 
-    // BƯỚC 1: Dọn text trắng (Trim) - KHÔNG XÓA DÒNG Ở ĐÂY ĐỂ BẢO VỆ CẤU TRÚC
     const paragraphsForCleaning = Array.from(doc.getElementsByTagName("w:p"));
     if (paragraphsForCleaning.length === 0) paragraphsForCleaning.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
 
@@ -231,7 +230,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    // XÓA NUMBERING
     if (options.removeNumbering) {
         const allParagraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
         for (const p of allParagraphs) {
@@ -255,7 +253,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    // ÉP KHỔ A4 NHƯNG BẢO TỒN CHIỀU NGANG (LANDSCAPE PROTECTOR)
     let sectPrsDoc = Array.from(doc.getElementsByTagName("w:sectPr"));
     if (sectPrsDoc.length === 0) sectPrsDoc = Array.from(doc.getElementsByTagNameNS(W_NS, "sectPr"));
 
@@ -406,25 +403,13 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         p.appendChild(pPr);
         const spacing = doc.createElementNS(W_NS, "w:spacing");
         setAttr(spacing, "before", "0");
-        setAttr(spacing, "after", "0");
+        setAttr(spacing, "after", "120"); // Lớp đệm 6pt mượt mà phía dưới
         setAttr(spacing, "line", "24"); 
         setAttr(spacing, "lineRule", "exact");
         pPr.appendChild(spacing);
         tc.appendChild(p);
         protectedElements.add(p);
         frag.appendChild(tbl);
-        
-        const safeP = doc.createElementNS(W_NS, "w:p");
-        const safePPr = doc.createElementNS(W_NS, "w:pPr");
-        safeP.appendChild(safePPr);
-        const safeSpacing = doc.createElementNS(W_NS, "w:spacing");
-        setAttr(safeSpacing, "before", "0");
-        setAttr(safeSpacing, "after", "120"); 
-        setAttr(safeSpacing, "line", "2"); 
-        setAttr(safeSpacing, "lineRule", "exact");
-        safePPr.appendChild(safeSpacing);
-        protectedElements.add(safeP);
-        frag.appendChild(safeP);
         return frag;
     };
 
@@ -441,7 +426,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         ind.removeAttribute("w:hanging");
         const spacing = getOrCreate(pPr, "w:spacing");
         setAttr(spacing, "before", "0");
-        setAttr(spacing, "after", "120"); 
+        setAttr(spacing, "after", "120"); // Lớp đệm 6pt
         setAttr(spacing, "line", "240"); 
         setAttr(spacing, "lineRule", "auto");
         const r = doc.createElementNS(W_NS, "w:r");
@@ -551,16 +536,48 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
             summaryParagraphs.forEach(sp => abstractElements.add(sp));
 
-            // PHỤC HỒI ĐƯỜNG KẺ NGANG TRỞ LẠI
+            // PHỤC HỒI ĐƯỜNG KẺ NGANG TRỞ LẠI & DỌN DẸP KHOẢNG TRỐNG
             if (!options.isCongVan) {
                 const targetNode = summaryParagraphs.length > 0 ? summaryParagraphs[summaryParagraphs.length - 1] : p;
+                
+                // --- TÍNH NĂNG BẮN TỈA: XÓA DÒNG TRỐNG THỪA NGAY DƯỚI TRÍCH YẾU ---
+                let nextNode = targetNode.nextSibling;
+                while (nextNode && (nextNode.nodeName === "w:p" || nextNode.nodeName === "p")) {
+                    const el = nextNode as Element;
+                    const textNodes = Array.from(el.getElementsByTagName("w:t")).concat(Array.from(el.getElementsByTagNameNS(W_NS, "t")));
+                    const text = textNodes.map(n => n.textContent || "").join("").trim();
+                    
+                    const hasDrawing = el.getElementsByTagName("w:drawing").length > 0 || el.getElementsByTagNameNS(W_NS, "drawing").length > 0;
+                    const hasPict = el.getElementsByTagName("w:pict").length > 0 || el.getElementsByTagNameNS(W_NS, "pict").length > 0;
+                    const hasObject = el.getElementsByTagName("w:object").length > 0 || el.getElementsByTagNameNS(W_NS, "object").length > 0;
+                    const hasSectPr = el.getElementsByTagName("w:sectPr").length > 0 || el.getElementsByTagNameNS(W_NS, "sectPr").length > 0;
+                    
+                    let hasPageBreak = false;
+                    const brs = Array.from(el.getElementsByTagName("w:br")).concat(Array.from(el.getElementsByTagNameNS(W_NS, "br")));
+                    for (const br of brs) {
+                        if (br.getAttribute("w:type") === "page" || br.getAttributeNS(W_NS, "type") === "page") {
+                            hasPageBreak = true;
+                            break;
+                        }
+                    }
+                    
+                    if (text.length === 0 && !hasDrawing && !hasPict && !hasObject && !hasSectPr && !hasPageBreak) {
+                        const toDelete = nextNode;
+                        nextNode = nextNode.nextSibling; // Chuyển sang soi dòng kế tiếp
+                        toDelete.parentNode?.removeChild(toDelete); // Tiêu diệt dòng trống
+                    } else {
+                        break; // Có chữ hoặc ảnh thì ngừng xóa
+                    }
+                }
+                // -------------------------------------------------------------
+
                 if (options.headerType === HeaderType.PARTY) {
                     const dashP = createPartyDashLine(protectedElements);
-                    if (targetNode.nextSibling) targetNode.parentNode?.insertBefore(dashP, targetNode.nextSibling);
+                    if (nextNode) targetNode.parentNode?.insertBefore(dashP, nextNode);
                     else targetNode.parentNode?.appendChild(dashP);
                 } else {
                     const underlineFrag = createTitleUnderlineFrag(protectedElements, lineTables);
-                    if (targetNode.nextSibling) targetNode.parentNode?.insertBefore(underlineFrag, targetNode.nextSibling);
+                    if (nextNode) targetNode.parentNode?.insertBefore(underlineFrag, nextNode);
                     else targetNode.parentNode?.appendChild(underlineFrag);
                 }
             }
@@ -573,10 +590,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
     let inKinhGuiBlock = false;
     let addSpaceBeforeMainContent = false;
-
-    // --- CÁC CỜ KIỂM SOÁT VÙNG DỌN DẸP THÂN VĂN BẢN ---
-    let hasStartedBodyContent = false; // Bắt đầu khi gặp chữ thật ở phần thân (Mở khóa trên)
-    let hasReachedSignature = false;   // Bật khi chạm đến vùng chữ ký/nơi nhận (Đóng khóa dưới)
+    let isBodyArea = true; 
 
     for (const p of finalParagraphs) {
       if (docTypeElements.has(p) || abstractElements.has(p) || protectedElements.has(p)) continue; 
@@ -585,8 +599,8 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       const trimmedPText = pText.trim();
       const upperText = trimmedPText.toUpperCase();
 
-      // 1. CẢM BIẾN CHỮ KÝ (Khóa Đuôi) - Hoạt động quét mọi dòng có chữ (kể cả trong bảng)
-      if (!hasReachedSignature && trimmedPText.length > 0) {
+      // CẢM BIẾN CHỮ KÝ (Khóa phần đuôi không dọn rác)
+      if (isBodyArea && trimmedPText.length > 0) {
           if (
               upperText.startsWith("NƠI NHẬN:") || 
               upperText === "NƠI NHẬN" ||
@@ -606,19 +620,14 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                   upperText === "NGƯỜI VIẾT"
               ))
           ) {
-              hasReachedSignature = true; 
+              isBodyArea = false; 
           }
       }
 
       const isTable = isTableParagraph(p);
 
-      // 2. CẢM BIẾN BẮT ĐẦU THÂN (Mở Khóa Trên) - Bỏ qua các bảng biểu
-      if (!hasStartedBodyContent && trimmedPText.length > 0 && !hasReachedSignature && !isTable) {
-          hasStartedBodyContent = true;
-      }
-
-      // 3. THỰC THI SMART BODY CLEANER (Chỉ xóa dòng trống ở thân, không đụng chạm đến đầu/đuôi và bảng biểu)
-      if (hasStartedBodyContent && !hasReachedSignature && trimmedPText.length === 0 && !isTable) {
+      // CẢM BIẾN DỌN RÁC PHẦN THÂN
+      if (isBodyArea && trimmedPText.length === 0 && !isTable) {
           const hasDrawing = p.getElementsByTagName("w:drawing").length > 0 || p.getElementsByTagNameNS(W_NS, "drawing").length > 0;
           const hasPict = p.getElementsByTagName("w:pict").length > 0 || p.getElementsByTagNameNS(W_NS, "pict").length > 0;
           const hasObject = p.getElementsByTagName("w:object").length > 0 || p.getElementsByTagNameNS(W_NS, "object").length > 0;
@@ -637,12 +646,11 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
           
           if (!hasContent) {
               p.parentNode?.removeChild(p);
-              continue; // Xóa xong thì Next luôn, không cần định dạng đoạn trống này nữa
+              continue; 
           }
       }
 
       if (isTable) continue; 
-      // =========================================================================
 
       const pPr = getOrCreate(p, "w:pPr");
 
