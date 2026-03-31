@@ -96,7 +96,12 @@ export default function App() {
   
   const todayStr = new Date().toISOString().split('T')[0];
   
-  // Dùng kiểu 'any' mở rộng để tránh lỗi Typescript khi thêm trường mới mà file types.ts chưa có
+  const getSavedSignatures = () => {
+    const saved = localStorage.getItem('docFormat_Signatures');
+    return saved ? JSON.parse(saved) : {};
+  };
+  const savedSigs = getSavedSignatures();
+
   const [options, setOptions] = useState<any>({
     headerType: HeaderType.NONE,
     departmentName: orgInfo?.departments?.[0] || "TỔ CHUYÊN MÔN",
@@ -106,22 +111,28 @@ export default function App() {
     font: { family: "Times New Roman", sizeNormal: 14, sizeTable: 13 },
     paragraph: { lineSpacing: 1.15, after: 6, indent: 1.27 },
     table: { rowHeight: 0.8 },
-    signerTitle: "",
-    signerName: "",
-    isMinutes: false,
-    presiderName: "",
-    secretaryName: "",
     docSymbol: "",
-    docSuffix: "",
+    // --- Ghi nhớ Hậu tố cơ quan ---
+    docSuffix: savedSigs.docSuffix || "", 
     isCongVan: false,
-    congVanSummary: ""
+    congVanSummary: "",
+    isMinutes: false,
+    signerTitle: savedSigs.signerTitle || "",
+    signerName: savedSigs.signerName || "",
+    presiderName: savedSigs.presiderName || "",
+    secretaryName: savedSigs.secretaryName || "",
+    approverTitle: savedSigs.approverTitle || "", 
+    approverName: savedSigs.approverName || ""   
   });
 
   const isUploadDisabled = options.isMinutes 
     ? (!options.presiderName?.trim() || !options.secretaryName?.trim())
     : (options.isCongVan 
         ? (!options.congVanSummary?.trim() || !options.signerTitle?.trim() || !options.signerName?.trim())
-        : (options.headerType !== HeaderType.NONE && (!options.signerTitle?.trim() || !options.signerName?.trim())));
+        : (options.headerType === HeaderType.DEPARTMENT 
+            ? (!options.signerTitle?.trim() || !options.signerName?.trim() || !options.approverTitle?.trim() || !options.approverName?.trim())
+            : (options.headerType !== HeaderType.NONE && (!options.signerTitle?.trim() || !options.signerName?.trim())))
+      );
 
   const handleFileSelect = (selectedFile: File) => {
     setFile(selectedFile);
@@ -131,6 +142,19 @@ export default function App() {
 
   const handleProcess = async () => {
     if (!file) return;
+
+    // --- Bổ sung docSuffix vào gói dữ liệu cần lưu trữ ---
+    const signatureData = {
+        signerTitle: options.signerTitle,
+        signerName: options.signerName,
+        presiderName: options.presiderName,
+        secretaryName: options.secretaryName,
+        approverTitle: options.approverTitle,
+        approverName: options.approverName,
+        docSuffix: options.docSuffix // Ghi nhớ hậu tố
+    };
+    localStorage.setItem('docFormat_Signatures', JSON.stringify(signatureData));
+    // ---------------------------------------------------
 
     setStatus(ProcessingStatus.PROCESSING);
     setResult({ success: false, logs: ["Khởi tạo hệ thống xử lý...", "Đang phân tích cấu trúc DOCX..."] });
@@ -243,12 +267,10 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col relative overflow-hidden selection:bg-blue-100 selection:text-blue-900">
       
-      {/* Abstract Tech Background Elements */}
       <div className="absolute top-0 left-0 w-full h-96 bg-gradient-to-b from-blue-50 to-transparent pointer-events-none z-0"></div>
       <div className="absolute top-[-10%] right-[-5%] w-[500px] h-[500px] bg-blue-100/40 rounded-full blur-3xl pointer-events-none z-0"></div>
       <div className="absolute bottom-[-10%] left-[-10%] w-[600px] h-[600px] bg-indigo-100/40 rounded-full blur-3xl pointer-events-none z-0"></div>
 
-      {/* School Top Bar */}
       <div className="relative z-20 bg-gradient-to-r from-slate-900 via-blue-900 to-slate-900 text-white py-2.5 shadow-md px-4">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
             <div className="w-24"></div>
@@ -278,7 +300,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Header */}
       <header className="relative z-10 bg-white/80 backdrop-blur-md border-b border-white/50 sticky top-0 shadow-sm">
         <div className="max-w-5xl mx-auto px-6 h-18 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3 group cursor-pointer">
@@ -301,7 +322,6 @@ export default function App() {
 
       <main className="relative z-10 max-w-4xl mx-auto px-6 py-10 flex-grow w-full">
         
-        {/* Intro */}
         <div className="text-center mb-8 space-y-4">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-700 text-[10px] font-bold uppercase tracking-wider mb-2">
             <Sparkles className="w-3 h-3" /> Phiên bản chuyển đổi số 2.0
@@ -314,7 +334,6 @@ export default function App() {
           </p>
         </div>
 
-        {/* CẢNH BÁO NẾU CHƯA ĐĂNG KÝ */}
         {authStatus !== 'REGISTERED' && (
             <div className="mb-8 p-4 bg-rose-50 border-2 border-rose-200 rounded-2xl flex flex-col items-center justify-center text-center animate-pulse shadow-md">
                 <LockKeyhole className="w-8 h-8 text-rose-500 mb-2" />
@@ -329,7 +348,6 @@ export default function App() {
             </div>
         )}
 
-        {/* Configuration Section */}
         {authStatus === 'REGISTERED' && (
         <div className="mb-8">
             <button 
@@ -347,7 +365,6 @@ export default function App() {
                         <Settings2 className="w-4 h-4 text-blue-600" /> Cấu hình định dạng
                     </h3>
                     
-                    {/* Header Template Option */}
                     <div className="mb-4 pb-4 border-b border-slate-100">
                         <div className="flex flex-col gap-2">
                             <div className="flex items-center gap-2">
@@ -366,7 +383,6 @@ export default function App() {
                             </select>
                             <p className="text-[10px] text-slate-400">Tự động chèn bảng thông tin cơ quan và Quốc hiệu vào đầu trang theo mẫu đã chọn</p>
                             
-                            {/* Conditional Document Symbol & Suffix */}
                             {(options.headerType === HeaderType.SCHOOL || options.headerType === HeaderType.PARTY) && (
                                 <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
@@ -399,7 +415,6 @@ export default function App() {
                                 </div>
                             )}
 
-                            {/* Conditional Department Select */}
                             {options.headerType === HeaderType.DEPARTMENT && (
                                 <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4">
                                     <label className="block text-sm font-bold text-slate-700 mb-2">
@@ -422,7 +437,6 @@ export default function App() {
                                 </div>
                             )}
 
-                            {/* Document Date Picker */}
                             {options.headerType !== HeaderType.NONE && (
                                 <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4">
                                     <label className="block text-sm font-bold text-slate-700 mb-2">
@@ -434,11 +448,9 @@ export default function App() {
                                         onChange={(e) => setOptions({...options, documentDate: e.target.value})}
                                         className="w-full sm:w-1/2 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-700"
                                     />
-                                    <p className="text-[10px] text-slate-400 mt-2">Mặc định là ngày hôm nay. Bạn có thể thay đổi nếu soạn văn bản cho ngày khác.</p>
                                 </div>
                             )}
 
-                            {/* Options: Minutes & Cong Van */}
                             <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
                                 <label className="flex items-center gap-3 cursor-pointer group">
                                     <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${options.isMinutes ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-slate-300 group-hover:border-blue-400'}`}>
@@ -473,7 +485,6 @@ export default function App() {
                                 </label>
                             </div>
 
-                            {/* Cong Van Summary Input */}
                             {options.isCongVan && (
                                 <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4">
                                     <label className="block text-sm font-bold text-slate-700 mb-2">
@@ -489,16 +500,62 @@ export default function App() {
                                 </div>
                             )}
 
-                            {/* Signer Information (For both Normal and Cong Van) */}
+                            {/* BLOCK NHẬP LIỆU: BGH DUYỆT TỔ CHUYÊN MÔN */}
+                            {options.headerType === HeaderType.DEPARTMENT && !options.isMinutes && (
+                                <div className="mt-4 animate-fadeIn border-t border-blue-100 pt-4 space-y-4 bg-blue-50/50 p-4 rounded-xl">
+                                    <p className="text-xs font-bold text-blue-700 uppercase flex items-center gap-1">
+                                        <ShieldCheck className="w-4 h-4"/> Thông tin Lãnh đạo trình duyệt
+                                    </p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-bold text-slate-700 mb-2">
+                                                Cấp duyệt
+                                            </label>
+                                            <select 
+                                                value={options.approverTitle || ""}
+                                                onChange={(e) => setOptions({...options, approverTitle: e.target.value})}
+                                                className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-700"
+                                            >
+                                                <option value="">-- Chọn chức vụ --</option>
+                                                <option value="HIỆU TRƯỞNG">HIỆU TRƯỞNG</option>
+                                                <option value="PHÓ HIỆU TRƯỞNG">PHÓ HIỆU TRƯỞNG</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-bold text-slate-700 mb-2">
+                                                Họ và tên người duyệt
+                                            </label>
+                                            <input 
+                                                type="text" 
+                                                placeholder="VD: Nguyễn Văn A"
+                                                value={options.approverName || ""}
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    const formatted = val.split(' ').map(word => 
+                                                        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+                                                    ).join(' ');
+                                                    setOptions({...options, approverName: formatted});
+                                                }}
+                                                className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-700"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Signer Information */}
                             {!options.isMinutes && options.headerType !== HeaderType.NONE && (
                                 <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4 space-y-4">
+                                    <p className="text-xs font-bold text-slate-500 uppercase">
+                                        {options.headerType === HeaderType.DEPARTMENT ? "Thông tin Tổ trưởng" : "Thông tin người ký"}
+                                    </p>
                                     <div>
                                         <label className="block text-sm font-bold text-slate-700 mb-2">
-                                            Chức vụ người ký
+                                            {options.headerType === HeaderType.DEPARTMENT ? "Chức danh (Mặc định: TỔ TRƯỞNG)" : "Chức vụ người ký"}
                                         </label>
                                         <input 
                                             type="text" 
-                                            placeholder="Nhập chức vụ người ký (VD: PHÓ HIỆU TRƯỞNG...)"
+                                            placeholder={options.headerType === HeaderType.DEPARTMENT ? "TỔ TRƯỞNG" : "VD: PHÓ HIỆU TRƯỞNG"}
                                             value={options.signerTitle || ""}
                                             onChange={(e) => setOptions({...options, signerTitle: e.target.value.toUpperCase()})}
                                             className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-700"
@@ -510,7 +567,7 @@ export default function App() {
                                         </label>
                                         <input 
                                             type="text" 
-                                            placeholder="Nhập Họ và tên người ký (VD: Nguyễn Văn A...)"
+                                            placeholder="VD: Trần Thị B..."
                                             value={options.signerName || ""}
                                             onChange={(e) => {
                                                 const val = e.target.value;
@@ -525,7 +582,6 @@ export default function App() {
                                 </div>
                             )}
 
-                            {/* Minutes Signer Information */}
                             {options.isMinutes && (
                                 <div className="mt-4 animate-fadeIn border-t border-slate-100 pt-4 space-y-4">
                                     <div>
@@ -575,7 +631,9 @@ export default function App() {
                                             ? "Bạn chưa nhập đầy đủ họ tên Chủ tọa và Thư ký"
                                             : (options.isCongVan && !options.congVanSummary?.trim() 
                                                 ? "Bạn chưa nhập Nội dung trích yếu của Công văn"
-                                                : "Bạn chưa nhập đầy đủ thông tin chức vụ hoặc họ tên người ký")
+                                                : (options.headerType === HeaderType.DEPARTMENT 
+                                                    ? "Bạn chưa nhập đủ thông tin Người ký hoặc Lãnh đạo duyệt"
+                                                    : "Bạn chưa nhập đầy đủ thông tin chức vụ hoặc họ tên người ký"))
                                         }
                                     </p>
                                 </div>
@@ -583,7 +641,6 @@ export default function App() {
                         </div>
                     </div>
 
-                    {/* Remove Numbering Option */}
                     <div className="mb-6 pb-6 border-b border-slate-100">
                         <label className="flex items-center gap-3 cursor-pointer group">
                             <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${options.removeNumbering ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white border-slate-300 group-hover:border-orange-400'}`}>
@@ -603,7 +660,6 @@ export default function App() {
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {/* Margins */}
                         <div className="space-y-3">
                             <label className="text-xs font-semibold text-slate-500 uppercase">Lề Trang (cm)</label>
                             <div className="grid grid-cols-2 gap-3">
@@ -646,7 +702,6 @@ export default function App() {
                             </div>
                         </div>
 
-                        {/* Font & Paragraph */}
                         <div className="space-y-3">
                             <label className="text-xs font-semibold text-slate-500 uppercase">Font & Đoạn văn</label>
                             <div className="grid grid-cols-2 gap-3">
@@ -694,12 +749,10 @@ export default function App() {
         </div>
         )}
 
-        {/* Main Card (Only show if Registered) */}
         <div className={`bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden relative group ${authStatus !== 'REGISTERED' ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500"></div>
 
           <div className="p-8 space-y-8">
-            {/* Step 1: Upload */}
             {!file && (
               <div className="space-y-5 animate-fadeIn">
                 <div className="flex items-center gap-3 text-sm font-bold text-slate-400 uppercase tracking-wider">
@@ -711,7 +764,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Step 2: File Selected & Actions */}
             {file && status !== ProcessingStatus.SUCCESS && (
               <div className="space-y-6 animate-fadeIn">
                 <div className="flex items-center justify-between p-5 bg-gradient-to-br from-slate-50 to-white border border-slate-200 rounded-xl shadow-sm relative overflow-hidden">
@@ -762,7 +814,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Step 3: Success */}
             {status === ProcessingStatus.SUCCESS && result && (
               <div className="text-center space-y-8 animate-fadeIn py-2">
                  <div className="relative w-24 h-24 mx-auto">
@@ -794,19 +845,16 @@ export default function App() {
                     </button>
                  </div>
 
-                 {/* NEW: Document Preview Injection */}
-                 <DocumentPreview blob={result.blob} />
+                 <DocumentPreview originalFile={file} processedBlob={result.blob} />
               </div>
             )}
 
-            {/* Logs Area */}
             {result?.logs && result.logs.length > 0 && (
               <div className="pt-6 border-t border-slate-100">
                 <ProcessingLog logs={result.logs} />
               </div>
             )}
 
-            {/* Error Display */}
             {status === ProcessingStatus.ERROR && (
               <div className="p-4 bg-red-50 text-red-800 rounded-xl border border-red-200 text-center flex flex-col items-center">
                 <p className="font-bold">Đã xảy ra lỗi</p>
@@ -818,17 +866,14 @@ export default function App() {
           </div>
         </div>
 
-
       </main>
       
-      {/* Design Credit Footer */}
       <footer className="py-6 text-center relative z-10 bg-white/50 border-t border-slate-200 backdrop-blur-sm">
          <p className="text-slate-500 text-sm font-medium">
            <span className="opacity-70">Version: 1.1-2026 &bull; Design by</span> <span className="text-blue-700 font-bold">Lai Cao Dang</span>
          </p>
       </footer>
 
-      {/* Organization Settings Modal */}
       {showOrgSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
@@ -851,7 +896,6 @@ export default function App() {
             </div>
             
             <div className="p-6 space-y-4 overflow-y-auto">
-              {/* STATE: REGISTERED */}
               {authStatus === 'REGISTERED' && (
                 <div className="space-y-6">
                   <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 text-emerald-900 shadow-inner">
@@ -899,7 +943,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* STATE: PENDING */}
               {authStatus === 'PENDING' && (
                   <div className="space-y-6">
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 text-amber-900 shadow-inner text-center">
@@ -930,7 +973,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* STATE: UNREGISTERED */}
               {authStatus === 'UNREGISTERED' && (
                 <>
                   <div className="bg-blue-50 text-blue-800 p-3 rounded-lg text-xs font-medium mb-4 border border-blue-100 shadow-inner">
@@ -1000,7 +1042,6 @@ export default function App() {
               )}
             </div>
             
-            {/* ACTION BUTTONS */}
             <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3 shrink-0">
               
               {authStatus === 'REGISTERED' && (
