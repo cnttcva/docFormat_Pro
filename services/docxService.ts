@@ -232,7 +232,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    // === SMART ERASER ===
+    // === TÍNH NĂNG: SMART ERASER ===
     if (options.headerType !== HeaderType.NONE) {
         const headTables = Array.from(doc.getElementsByTagName("w:tbl"));
         if (headTables.length === 0) headTables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
@@ -315,7 +315,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             stopTailScan = true; 
         }
     }
-    // === KẾT THÚC SMART ERASER ===
 
     if (options.removeNumbering) {
         const allParagraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
@@ -626,6 +625,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             if (!options.isCongVan) {
                 const targetNode = summaryParagraphs.length > 0 ? summaryParagraphs[summaryParagraphs.length - 1] : p;
                 
+                // --- TÍNH NĂNG: LINE ERASER ---
                 let nextNode = targetNode.nextSibling;
                 while (nextNode) {
                     const nodeName = nextNode.nodeName;
@@ -745,6 +745,13 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       if (isTable) continue; 
 
       const pPr = getOrCreate(p, "w:pPr");
+
+      // === TÍNH NĂNG MỚI ĐÃ ĐƯỢC GIỮ LẠI (V7.4): DIỆT CONTEXTUAL SPACING ===
+      const contextualSpacing = pPr.getElementsByTagNameNS(W_NS, "contextualSpacing")[0] || pPr.getElementsByTagName("w:contextualSpacing")[0];
+      if (contextualSpacing) {
+          contextualSpacing.parentNode?.removeChild(contextualSpacing);
+      }
+      // =====================================================================
 
       if (options.isCongVan) {
           if (upperText.startsWith("KÍNH GỬI:") || upperText === "KÍNH GỬI") {
@@ -1526,6 +1533,7 @@ const createHeaderTemplate = (doc: Document, options: any): Element => {
     return tbl;
 };
 
+// === ĐÃ GỘP THÀNH CÔNG AUTOSTAMP (TỪ BẢN V7.3) VÀO ĐÂY ===
 const createSignatureBlock = (doc: Document, options: any, docType: string): Element => {
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
     const getOrCreate = (parent: Element, tagName: string): Element => {
@@ -1654,14 +1662,14 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
     const presiderName = options.presiderName ? options.presiderName.trim() : "";
     const secretaryName = options.secretaryName ? options.secretaryName.trim() : "";
 
-    // --- HÀM TRỢ GIÚP: Sinh dòng trống linh hoạt ---
+    // --- HÀM TRỢ GIÚP (TỪ V7.3): Sinh dòng trống linh hoạt ---
     const addBlankLines = (tc: Element, count: number) => {
         for (let i = 0; i < count; i++) {
             tc.appendChild(createTightP("", false, false, false, "center", 14));
         }
     };
 
-    // --- BỘ LỌC ĐÓNG DẤU: Trả về 5 dòng nếu có dấu tròn, 3 dòng nếu ký thường ---
+    // --- BỘ LỌC ĐÓNG DẤU (TỪ V7.3): 5 dòng cho dấu tròn, 3 dòng cho ký thường ---
     const getBlankLinesForStamp = (title: string): number => {
         const t = title.toUpperCase();
         if (["HIỆU TRƯỞNG", "CHỦ TỊCH", "GIÁM ĐỐC", "TRƯỞNG PHÒNG", "BÍ THƯ", "TRƯỞNG BAN"].some(k => t.includes(k))) {
@@ -1677,7 +1685,7 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
         if (secretaryName) tc1.appendChild(createTightP(secretaryName, true, false, false, "center", 14));
 
         tc2.appendChild(createTightP("CHỦ TỌA", true, false, false, "center", 14));
-        addBlankLines(tc2, getBlankLinesForStamp("CHỦ TỌA")); // Thường là 3
+        addBlankLines(tc2, getBlankLinesForStamp("CHỦ TỌA")); 
         if (presiderName) tc2.appendChild(createTightP(presiderName, true, false, false, "center", 14));
     } else {
         switch (options.headerType) {
@@ -1723,7 +1731,7 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
 
                 const sTitleDep = signerTitle || "TỔ TRƯỞNG";
                 tc2.appendChild(createTightP(sTitleDep, true, false, false, "center", 14));
-                addBlankLines(tc2, getBlankLinesForStamp(sTitleDep)); // Tổ trưởng = 3 dòng
+                addBlankLines(tc2, getBlankLinesForStamp(sTitleDep)); 
                 if (signerName) tc2.appendChild(createTightP(signerName, true, false, false, "center", 14));
                 break;
 
