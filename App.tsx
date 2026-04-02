@@ -536,9 +536,7 @@ export default function App() {
                                                 value={options.approverName || ""}
                                                 onChange={(e) => {
                                                     const val = e.target.value;
-                                                    const formatted = val.split(' ').map(word => 
-                                                        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-                                                    ).join(' ');
+                                                    const formatted = val.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(' ');
                                                     setOptions({...options, approverName: formatted});
                                                 }}
                                                 className="w-full px-4 py-3 bg-white border border-indigo-200 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-800 shadow-sm placeholder:font-normal"
@@ -552,7 +550,7 @@ export default function App() {
                             {!options.isMinutes && options.headerType !== HeaderType.NONE && (
                                 <div className="mt-4 animate-fadeIn border border-slate-200 bg-slate-50/50 p-5 rounded-2xl">
                                     <p className="text-xs font-black text-slate-700 uppercase tracking-widest mb-4">
-                                        {options.headerType === HeaderType.DEPARTMENT ? "Thông tin Tổ trưởng Ký" : "Thông tin Người ký"}
+                                        {options.headerType === HeaderType.DEPARTMENT ? "Thông quyết Tổ trưởng Ký" : "Thông tin Người ký"}
                                     </p>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                                         <div>
@@ -575,9 +573,7 @@ export default function App() {
                                                 value={options.signerName || ""}
                                                 onChange={(e) => {
                                                     const val = e.target.value;
-                                                    const formatted = val.split(' ').map(word => 
-                                                        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-                                                    ).join(' ');
+                                                    const formatted = val.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(' ');
                                                     setOptions({...options, signerName: formatted});
                                                 }}
                                                 className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-violet-500 text-slate-800 shadow-sm placeholder:font-normal"
@@ -601,9 +597,7 @@ export default function App() {
                                                 value={options.presiderName || ""}
                                                 onChange={(e) => {
                                                     const val = e.target.value;
-                                                    const formatted = val.split(' ').map(word => 
-                                                        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-                                                    ).join(' ');
+                                                    const formatted = val.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(' ');
                                                     setOptions({...options, presiderName: formatted});
                                                 }}
                                                 className="w-full px-4 py-3 bg-white border border-indigo-200 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-800 shadow-sm placeholder:font-normal"
@@ -617,9 +611,7 @@ export default function App() {
                                                 value={options.secretaryName || ""}
                                                 onChange={(e) => {
                                                     const val = e.target.value;
-                                                    const formatted = val.split(' ').map(word => 
-                                                        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-                                                    ).join(' ');
+                                                    const formatted = val.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(' ');
                                                     setOptions({...options, secretaryName: formatted});
                                                 }}
                                                 className="w-full px-4 py-3 bg-white border border-indigo-200 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-800 shadow-sm placeholder:font-normal"
@@ -1009,7 +1001,7 @@ export default function App() {
                           type="text" 
                           value={orgFormValues.governingBody}
                           onChange={(e) => setOrgFormValues({...orgFormValues, governingBody: e.target.value})}
-                          placeholder="VD: UBND HUYỆN EA KAR"
+                          placeholder="VD: UBND xã Ea Kar"
                           className="w-full px-4 py-3 bg-slate-50 hover:bg-white border border-slate-200 rounded-xl text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors"
                         />
                       </div>
@@ -1019,7 +1011,7 @@ export default function App() {
                           type="text" 
                           value={orgFormValues.orgName}
                           onChange={(e) => setOrgFormValues({...orgFormValues, orgName: e.target.value})}
-                          placeholder="VD: TRƯỜNG THCS CHU VĂN AN"
+                          placeholder="VD: Trường THCS Chu Văn An"
                           className="w-full px-4 py-3 bg-slate-50 hover:bg-white border border-slate-200 rounded-xl text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors"
                         />
                       </div>
@@ -1030,7 +1022,7 @@ export default function App() {
                           type="text" 
                           value={orgFormValues.partyUpper}
                           onChange={(e) => setOrgFormValues({...orgFormValues, partyUpper: e.target.value})}
-                          placeholder="VD: ĐẢNG BỘ XÃ EA KAR"
+                          placeholder="VD: Đảng bộ xã Ea Kar"
                           className="w-full px-4 py-3 bg-slate-50 hover:bg-white border border-slate-200 rounded-xl text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors"
                         />
                       </div>
@@ -1040,7 +1032,7 @@ export default function App() {
                           type="text" 
                           value={orgFormValues.partyCell}
                           onChange={(e) => setOrgFormValues({...orgFormValues, partyCell: e.target.value})}
-                          placeholder="VD: CHI BỘ TRƯỜNG THCS CHU VĂN AN"
+                          placeholder="VD: Chi bộ trường THCS Chu Văn An"
                           className="w-full px-4 py-3 bg-slate-50 hover:bg-white border border-slate-200 rounded-xl text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors"
                         />
                       </div>
