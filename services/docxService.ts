@@ -89,6 +89,14 @@ const normalizeSummary = (text: string): string => {
     return summary.trim();
 };
 
+const cleanPunctuation = (text: string): string => {
+    let t = text;
+    t = t.replace(/\s+([,\.:;!?])/g, '$1');
+    t = t.replace(/([,\.:;!?])([^\s\d\)"'”’])/g, '$1 $2');
+    t = t.replace(/\(\s+/g, '(').replace(/\s+\)/g, ')');
+    return t;
+};
+
 const isParagraphBold = (p: Element): boolean => {
     const runs = Array.from(p.getElementsByTagNameNS(W_NS, "r"));
     for (const r of runs) {
@@ -625,7 +633,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             if (!options.isCongVan) {
                 const targetNode = summaryParagraphs.length > 0 ? summaryParagraphs[summaryParagraphs.length - 1] : p;
                 
-                // --- TÍNH NĂNG: LINE ERASER ---
                 let nextNode = targetNode.nextSibling;
                 while (nextNode) {
                     const nodeName = nextNode.nodeName;
@@ -719,7 +726,9 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
       const isTable = isTableParagraph(p);
 
-      if (isBodyArea && trimmedPText.length === 0 && !isTable) {
+      const rawTextForEmptyCheck = pText.replace(/[\s\u200B-\u200D\uFEFF\xA0]+/g, '');
+      
+      if (isBodyArea && rawTextForEmptyCheck.length === 0 && !isTable) {
           const hasDrawing = p.getElementsByTagName("w:drawing").length > 0 || p.getElementsByTagNameNS(W_NS, "drawing").length > 0;
           const hasPict = p.getElementsByTagName("w:pict").length > 0 || p.getElementsByTagNameNS(W_NS, "pict").length > 0;
           const hasObject = p.getElementsByTagName("w:object").length > 0 || p.getElementsByTagNameNS(W_NS, "object").length > 0;
@@ -746,12 +755,10 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
       const pPr = getOrCreate(p, "w:pPr");
 
-      // === TÍNH NĂNG MỚI ĐÃ ĐƯỢC GIỮ LẠI (V7.4): DIỆT CONTEXTUAL SPACING ===
       const contextualSpacing = pPr.getElementsByTagNameNS(W_NS, "contextualSpacing")[0] || pPr.getElementsByTagName("w:contextualSpacing")[0];
       if (contextualSpacing) {
           contextualSpacing.parentNode?.removeChild(contextualSpacing);
       }
-      // =====================================================================
 
       if (options.isCongVan) {
           if (upperText.startsWith("KÍNH GỬI:") || upperText === "KÍNH GỬI") {
@@ -920,6 +927,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       }
     }
 
+    // === XỬ LÝ BẢNG BIỂU NÂNG CAO ===
     const tables = Array.from(doc.getElementsByTagName("w:tbl"));
     if (tables.length === 0) tables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
 
@@ -935,6 +943,11 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             if (!isHeaderRow && trPr.getElementsByTagName("w:tblHeader").length > 0) {
                 isHeaderRow = true;
             }
+
+            // QUÉT HÀNG TỔNG CỘNG
+            const trTextNodes = Array.from(tr.getElementsByTagName("w:t")).concat(Array.from(tr.getElementsByTagNameNS(W_NS, "t")));
+            const trText = trTextNodes.map(n => n.textContent || "").join("").toUpperCase();
+            const isTotalRow = !isHeaderRow && (trText.includes("TỔNG CỘNG") || trText.includes("TỔNG SỐ") || trText.includes("TỔNG:"));
 
             let trHeight = getOrCreate(trPr, "w:trHeight");
             setAttr(trHeight, "val", String(Math.round(options.table.rowHeight * TWIPS_PER_CM))); 
@@ -952,22 +965,32 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                 const gridSpan = gridSpanEl ? parseInt(gridSpanEl.getAttribute("w:val") || "1") : 1;
 
                 const tcParagraphs = Array.from(tc.getElementsByTagName("w:p"));
+
+                // Lấy Text của Cell để kiểm tra Cột STT hoặc Cột Số
+                const tcTextNodes = Array.from(tc.getElementsByTagName("w:t")).concat(Array.from(tc.getElementsByTagNameNS(W_NS, "t")));
+                const rawCellText = tcTextNodes.map(n => n.textContent || "").join("").trim();
                 
                 if (isHeaderRow) {
-                    const textNodes = Array.from(tc.getElementsByTagName("w:t"));
-                    const rawText = textNodes.map(n => n.textContent || "").join("").trim();
-                    const cleanText = rawText.toUpperCase().replace(/\./g, '');
+                    const cleanText = rawCellText.toUpperCase().replace(/\./g, '');
                     if (cleanText === "STT" || cleanText === "SỐ TT") {
                         sttColIndex = logicalColIndex;
                     }
                 }
 
+                // QUÉT CỘT SỐ: ĐÃ SỬA LỖI REGEX BẰNG CÁCH THÊM \ TRƯỚC DẤU -
+                const isNumericCell = rawCellText.length > 0 && /^[\(\[\-+]?[\d\.\,\s]+(?:vnđ|vnd|đ|%)?[\)\]]?$/i.test(rawCellText);
+
                 for (const p of tcParagraphs) {
                     const pPr = getOrCreate(p, "w:pPr");
                     const jc = getOrCreate(pPr, "w:jc");
                     
+                    // LOGIC CANH LỀ MỚI
                     if (isHeaderRow || logicalColIndex === sttColIndex) {
                         setAttr(jc, "val", "center");
+                    } else if (!isHeaderRow && isNumericCell) {
+                        setAttr(jc, "val", "right"); // Canh phải cho Cột chứa toàn số
+                    } else if (isTotalRow && logicalColIndex === 0 && rawCellText.toUpperCase().includes("TỔNG")) {
+                        setAttr(jc, "val", "center"); // Tùy chọn canh giữa cho nhãn "Tổng cộng" ở cột đầu
                     } else {
                         setAttr(jc, "val", "left");
                     }
@@ -977,12 +1000,19 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                     setAttr(ind, "right", "0");
                     setAttr(ind, "firstLine", "0");
                     ind.removeAttribute("w:hanging");
+                    ind.removeAttributeNS(W_NS, "hanging");
+
+                    // CHUẨN HÓA KHOẢNG CÁCH: BEFORE = 0, AFTER = 0
+                    const spacing = getOrCreate(pPr, "w:spacing");
+                    setAttr(spacing, "before", "0");
+                    setAttr(spacing, "after", "0");
+                    setAttr(spacing, "line", "240"); 
+                    setAttr(spacing, "lineRule", "auto");
 
                     const runs = Array.from(p.getElementsByTagName("w:r"));
                     
                     if (isHeaderRow) {
-                        const textNodes = Array.from(p.getElementsByTagName("w:t"));
-                        const rawText = textNodes.map(n => n.textContent || "").join("").trim();
+                        const rawText = rawCellText; // Dùng lại text của cell
                         
                         const isLayoutText = /CỘNG HÒA|ĐỘC LẬP|UBND|TRƯỜNG|MẪU|SỞ|PHÒNG/i.test(rawText);
                         const hasLetters = /[A-ZÀ-Ỹa-zà-ỹ]/.test(rawText);
@@ -1029,6 +1059,13 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                     } else {
                         for (const r of runs) {
                             const rPr = getOrCreate(r, "w:rPr");
+                            
+                            // IN ĐẬM HÀNG TỔNG CỘNG
+                            if (isTotalRow) {
+                                const b = getOrCreate(rPr, "w:b");
+                                setAttr(b, "val", "true");
+                            }
+
                             const targetSz = String(options.font.sizeTable * 2);
                             const sz = getOrCreate(rPr, "w:sz");
                             setAttr(sz, "val", targetSz); 
@@ -1041,6 +1078,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             }
         }
     }
+    // =============================
     
     if (options.headerType !== HeaderType.NONE && body) {
         const headerTable = createHeaderTemplate(doc, options);
@@ -1533,7 +1571,7 @@ const createHeaderTemplate = (doc: Document, options: any): Element => {
     return tbl;
 };
 
-// === ĐÃ GỘP THÀNH CÔNG AUTOSTAMP (TỪ BẢN V7.3) VÀO ĐÂY ===
+// === ĐÃ GỘP THÀNH CÔNG AUTOSTAMP VÀO ĐÂY ===
 const createSignatureBlock = (doc: Document, options: any, docType: string): Element => {
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
     const getOrCreate = (parent: Element, tagName: string): Element => {
@@ -1662,14 +1700,12 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
     const presiderName = options.presiderName ? options.presiderName.trim() : "";
     const secretaryName = options.secretaryName ? options.secretaryName.trim() : "";
 
-    // --- HÀM TRỢ GIÚP (TỪ V7.3): Sinh dòng trống linh hoạt ---
     const addBlankLines = (tc: Element, count: number) => {
         for (let i = 0; i < count; i++) {
             tc.appendChild(createTightP("", false, false, false, "center", 14));
         }
     };
 
-    // --- BỘ LỌC ĐÓNG DẤU (TỪ V7.3): 5 dòng cho dấu tròn, 3 dòng cho ký thường ---
     const getBlankLinesForStamp = (title: string): number => {
         const t = title.toUpperCase();
         if (["HIỆU TRƯỞNG", "CHỦ TỊCH", "GIÁM ĐỐC", "TRƯỞNG PHÒNG", "BÍ THƯ", "TRƯỞNG BAN"].some(k => t.includes(k))) {
@@ -1678,7 +1714,6 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
         return 3; 
     };
 
-    // === XỬ LÝ KHỐI CHỮ KÝ ===
     if (isMinutes) {
         tc1.appendChild(createTightP("THƯ KÝ", true, false, false, "center", 14));
         addBlankLines(tc1, 3);
@@ -1715,13 +1750,13 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
                     if (actualApprTitle.includes("PHÓ")) {
                         tc1.appendChild(createTightP("KT. HIỆU TRƯỞNG", true, false, false, "center", 14));
                         tc1.appendChild(createTightP("PHÓ HIỆU TRƯỞNG", true, false, false, "center", 14));
-                        addBlankLines(tc1, 4); // Bớt 1 dòng bù trừ
+                        addBlankLines(tc1, 4); 
                     } else {
-                        addBlankLines(tc1, 5); // 5 dòng cho dấu tròn
+                        addBlankLines(tc1, 5); 
                     }
                     if (approverName) tc1.appendChild(createTightP(approverName, true, false, false, "center", 14));
                     
-                    tc1.appendChild(createTightP("", false, false, false, "center", 14)); // Dòng rỗng ngăn cách Nơi nhận
+                    tc1.appendChild(createTightP("", false, false, false, "center", 14)); 
                 }
 
                 tc1.appendChild(createTightP("Nơi nhận:", true, true, false, "left", 12));
@@ -1760,4 +1795,4 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
         }
     }
     return tbl;
-}
+};
