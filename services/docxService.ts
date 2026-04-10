@@ -22,7 +22,8 @@ const DEFAULT_OPTIONS: any = {
   isCongVan: false,
   congVanSummary: "",
   approverTitle: "",
-  approverName: ""
+  approverName: "",
+  isDraft: false 
 };
 
 const ACRONYMS_LIST = [
@@ -323,21 +324,122 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
+    // === PHÂN TÍCH NUMBERING ĐỂ TRÁNH LỖI BULLET ===
+    let listFormats: Record<string, string> = {}; 
+    const numberingXmlContent = await zip.file("word/numbering.xml")?.async("string");
+    if (numberingXmlContent) {
+        const numDoc = parser.parseFromString(numberingXmlContent, "application/xml");
+        const nums = Array.from(numDoc.getElementsByTagNameNS(W_NS, "num")).concat(Array.from(numDoc.getElementsByTagName("w:num")));
+        const abstractNums = Array.from(numDoc.getElementsByTagNameNS(W_NS, "abstractNum")).concat(Array.from(numDoc.getElementsByTagName("w:abstractNum")));
+
+        const numToAbstractMap: Record<string, string> = {};
+        for (const num of nums) {
+            const numId = num.getAttributeNS(W_NS, "numId") || num.getAttribute("w:numId");
+            const absNumIdEl = num.getElementsByTagNameNS(W_NS, "abstractNumId")[0] || num.getElementsByTagName("w:abstractNumId")[0];
+            if (numId && absNumIdEl) {
+                numToAbstractMap[numId] = absNumIdEl.getAttributeNS(W_NS, "val") || absNumIdEl.getAttribute("w:val") || "";
+            }
+        }
+
+        const absNumMap: Record<string, Element> = {};
+        for (const absNum of abstractNums) {
+            const absId = absNum.getAttributeNS(W_NS, "abstractNumId") || absNum.getAttribute("w:abstractNumId");
+            if (absId) absNumMap[absId] = absNum;
+        }
+
+        for (const numId in numToAbstractMap) {
+            const absId = numToAbstractMap[numId];
+            const absNum = absNumMap[absId];
+            if (absNum) {
+                const lvls = Array.from(absNum.getElementsByTagNameNS(W_NS, "lvl")).concat(Array.from(absNum.getElementsByTagName("w:lvl")));
+                for (const lvl of lvls) {
+                    const ilvl = lvl.getAttributeNS(W_NS, "ilvl") || lvl.getAttribute("w:ilvl");
+                    const numFmtEl = lvl.getElementsByTagNameNS(W_NS, "numFmt")[0] || lvl.getElementsByTagName("w:numFmt")[0];
+                    const numFmt = numFmtEl ? (numFmtEl.getAttributeNS(W_NS, "val") || numFmtEl.getAttribute("w:val")) : "";
+                    if (ilvl && numFmt) {
+                        listFormats[`${numId}_${ilvl}`] = numFmt;
+                    }
+                }
+            }
+        }
+    }
+
     if (options.removeNumbering) {
-        const allParagraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
+        const allParagraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p")).concat(Array.from(doc.getElementsByTagName("w:p")));
+        let listCounters: Record<string, number> = {};
+
         for (const p of allParagraphs) {
             const pPr = p.getElementsByTagNameNS(W_NS, "pPr")[0] || p.getElementsByTagName("w:pPr")[0];
+            
+            let fullText = "";
+            const pRunsForText = Array.from(p.getElementsByTagNameNS(W_NS, "r")).concat(Array.from(p.getElementsByTagName("w:r")));
+            for (const r of pRunsForText) {
+                Array.from(r.childNodes).forEach(child => {
+                    const name = child.nodeName.replace("w:", "");
+                    if (name === "t") fullText += child.textContent;
+                    if (name === "tab") fullText += " "; 
+                });
+            }
+            fullText = fullText.trim();
+
             if (pPr) {
                 const numPr = pPr.getElementsByTagNameNS(W_NS, "numPr")[0] || pPr.getElementsByTagName("w:numPr")[0];
-                if (numPr) pPr.removeChild(numPr);
-                const pStyle = getOrCreate(pPr, "w:pStyle");
-                setAttr(pStyle, "val", "Normal");
+                if (numPr) {
+                    const ilvlEl = numPr.getElementsByTagNameNS(W_NS, "ilvl")[0] || numPr.getElementsByTagName("w:ilvl")[0];
+                    const numIdEl = numPr.getElementsByTagNameNS(W_NS, "numId")[0] || numPr.getElementsByTagName("w:numId")[0];
+                    
+                    const ilvl = ilvlEl ? (ilvlEl.getAttributeNS(W_NS, "val") || ilvlEl.getAttribute("w:val") || "0") : "0";
+                    const numId = numIdEl ? (numIdEl.getAttributeNS(W_NS, "val") || numIdEl.getAttribute("w:val") || "0") : "0";
+
+                    const levelKey = `${numId}_${ilvl}`;
+                    const numFmt = listFormats[levelKey] || "decimal"; 
+
+                    if (!listCounters[levelKey]) listCounters[levelKey] = 0;
+                    listCounters[levelKey]++;
+
+                    const hasListPrefix = /^([IVXLCDM]+\.|[0-9]+\.|[a-zđ]\)|\-|\+|\*|•)/i.test(fullText);
+                    
+                    if (!hasListPrefix && fullText.length > 0) {
+                        let prefix = "";
+                        
+                        // NẾU ĐỊNH DẠNG LÀ BULLET TRÒN -> KHÔNG CHÈN GÌ CẢ
+                        if (numFmt === "bullet") {
+                            prefix = ""; 
+                        } else {
+                            if (numFmt === "decimal") {
+                                prefix = `${listCounters[levelKey]}. `;
+                            } else if (numFmt === "lowerLetter") {
+                                const char = String.fromCharCode(96 + listCounters[levelKey]);
+                                prefix = `${char}) `;
+                            } else if (numFmt === "upperLetter") {
+                                const char = String.fromCharCode(64 + listCounters[levelKey]);
+                                prefix = `${char}. `;
+                            } else {
+                                prefix = `${listCounters[levelKey]}. `;
+                            }
+                        }
+
+                        if (prefix !== "") {
+                            const r = doc.createElementNS(W_NS, "w:r");
+                            const t = doc.createElementNS(W_NS, "w:t");
+                            t.setAttribute("xml:space", "preserve");
+                            t.textContent = prefix;
+                            r.appendChild(t);
+                            const insertBeforeNode = pPr.nextSibling;
+                            if (insertBeforeNode) p.insertBefore(r, insertBeforeNode);
+                            else p.appendChild(r);
+                        }
+                    }
+                    
+                    pPr.removeChild(numPr);
+                }
             }
+
             const firstRun = p.getElementsByTagNameNS(W_NS, "r")[0] || p.getElementsByTagName("w:r")[0];
             if (firstRun) {
                 const firstText = firstRun.getElementsByTagNameNS(W_NS, "t")[0] || firstRun.getElementsByTagName("w:t")[0];
                 if (firstText && firstText.textContent) {
-                    const bulletRegex = /^[\s]*([•\-\–\—\*]|(\d+\.))[\s]+/;
+                    const bulletRegex = /^[\s]*([•\-\–\—\*])[\s]+/;
                     if (bulletRegex.test(firstText.textContent)) {
                         firstText.textContent = firstText.textContent.replace(bulletRegex, "").trimStart();
                     }
@@ -696,14 +798,14 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       if (docTypeElements.has(p) || abstractElements.has(p) || protectedElements.has(p)) continue; 
       
       const pText = p.textContent || "";
-      const trimmedPText = pText.trim();
-      const upperText = trimmedPText.toUpperCase();
+      const trimmedPTextOriginal = pText.trim();
+      const upperText = trimmedPTextOriginal.toUpperCase();
 
-      if (isBodyArea && trimmedPText.length > 0) {
+      if (isBodyArea && trimmedPTextOriginal.length > 0) {
           if (
               upperText.startsWith("NƠI NHẬN:") || 
               upperText === "NƠI NHẬN" ||
-              (trimmedPText.length < 40 && (
+              (trimmedPTextOriginal.length < 40 && (
                   upperText.includes("HIỆU TRƯỞNG") ||
                   upperText.includes("GIÁM ĐỐC") ||
                   upperText.includes("CHỦ TỊCH") ||
@@ -724,7 +826,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       }
 
       const isTable = isTableParagraph(p);
-
       const rawTextForEmptyCheck = pText.replace(/[\s\u200B-\u200D\uFEFF\xA0]+/g, '');
       
       if (isBodyArea && rawTextForEmptyCheck.length === 0 && !isTable) {
@@ -743,7 +844,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
           }
           
           const hasContent = hasDrawing || hasPict || hasObject || hasSectPr || hasPageBreak;
-          
           if (!hasContent) {
               p.parentNode?.removeChild(p);
               continue; 
@@ -753,6 +853,32 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       if (isTable) continue; 
 
       const pPr = getOrCreate(p, "w:pPr");
+
+      let startTrimmed = false;
+      const runsForTrim = Array.from(p.getElementsByTagNameNS(W_NS, "r")).concat(Array.from(p.getElementsByTagName("w:r")));
+      for (const r of runsForTrim) {
+          if (startTrimmed) break;
+          const children = Array.from(r.childNodes);
+          for (const child of children) {
+              const name = child.nodeName.replace("w:", "");
+              if (name === "tab") {
+                  r.removeChild(child);
+              } else if (name === "t") {
+                  if (child.textContent) {
+                      const original = child.textContent;
+                      const trimmed = original.replace(/^[\s\xA0]+/, '');
+                      child.textContent = trimmed;
+                      if (trimmed.length > 0) {
+                          startTrimmed = true; 
+                          break;
+                      }
+                  }
+              } else if (name === "drawing" || name === "pict") {
+                  startTrimmed = true;
+                  break;
+              }
+          }
+      }
 
       const contextualSpacing = pPr.getElementsByTagNameNS(W_NS, "contextualSpacing")[0] || pPr.getElementsByTagName("w:contextualSpacing")[0];
       if (contextualSpacing) {
@@ -796,7 +922,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
           }
 
           if (inKinhGuiBlock) {
-              if (trimmedPText.startsWith("-") || trimmedPText.startsWith("+")) {
+              if (trimmedPTextOriginal.startsWith("-") || trimmedPTextOriginal.startsWith("+")) {
                   const jc = getOrCreate(pPr, "w:jc");
                   setAttr(jc, "val", "left");
                   const ind = getOrCreate(pPr, "w:ind");
@@ -828,7 +954,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                       setAttr(szCs, "val", String(targetSize));
                   }
                   continue;
-              } else if (trimmedPText.length > 0) {
+              } else if (trimmedPTextOriginal.length > 0) {
                   inKinhGuiBlock = false;
                   addSpaceBeforeMainContent = true;
               }
@@ -836,11 +962,11 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       }
 
       let isDecisionSpecialLine = false;
-      if (detectedDocType === "QUYẾT ĐỊNH" && trimmedPText.length > 0) {
+      if (detectedDocType === "QUYẾT ĐỊNH" && trimmedPTextOriginal.length > 0) {
           if (upperText === "QUYẾT ĐỊNH:" || upperText === "QUYẾT ĐỊNH") {
               isDecisionSpecialLine = true;
           } 
-          else if (trimmedPText === upperText && trimmedPText.length < 150 && /[A-ZÀ-Ỹ]/.test(upperText)) {
+          else if (trimmedPTextOriginal === upperText && trimmedPTextOriginal.length < 150 && /[A-ZÀ-Ỹ]/.test(upperText)) {
               isDecisionSpecialLine = true;
           }
       }
@@ -874,6 +1000,17 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         continue; 
       }
 
+      let pTextParsed = "";
+      const runsForText = Array.from(p.getElementsByTagNameNS(W_NS, "r")).concat(Array.from(p.getElementsByTagName("w:r")));
+      for (const r of runsForText) {
+          Array.from(r.childNodes).forEach(child => {
+              const name = child.nodeName.replace("w:", "");
+              if (name === "t") pTextParsed += child.textContent;
+              if (name === "tab") pTextParsed += " "; 
+          });
+      }
+      const trimmedPText = pTextParsed.trim();
+
       const lowerPText = trimmedPText.toLowerCase().replace(/^[\-\+*•\s]+/, '');
       const isBasisLine = lowerPText.startsWith("căn cứ") || lowerPText.startsWith("xét") || lowerPText.startsWith("theo");
       
@@ -881,6 +1018,27 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       if (isBasisLine) {
           if (detectedDocType === "QUYẾT ĐỊNH" || detectedDocType === "NGHỊ QUYẾT") {
               isItalicBasis = true; 
+          }
+      }
+
+      const isRomanHeading = /^(i{1,3}|iv|v|vi{1,3}|ix|x|xi{1,3}|xiv|xv|xvi{1,3}|xix|xx|[IVXLCDM]+)\.[\s\xA0]+/.test(trimmedPText);
+      const isNumberHeading = /^\d+(?:\.\d+)*\.[\s\xA0]+/.test(trimmedPText);
+      let isHeading = isRomanHeading || isNumberHeading;
+
+      if (isHeading) {
+          const endsWithPunctuation = /[\.\;\:\,]$/.test(trimmedPText);
+          if (endsWithPunctuation && trimmedPText.length > 50) {
+              isHeading = false;
+          }
+          if (trimmedPText.length > 150) {
+              isHeading = false;
+          }
+      }
+
+      if (isRomanHeading && isHeading) {
+          const tNodesForUpper = Array.from(p.getElementsByTagNameNS(W_NS, "t")).concat(Array.from(p.getElementsByTagName("w:t")));
+          for (const t of tNodesForUpper) {
+              if (t.textContent) t.textContent = t.textContent.toUpperCase();
           }
       }
 
@@ -898,19 +1056,34 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       setAttr(spacing, "after", String(Math.round(options.paragraph.after * TWIPS_PER_PT)));
       setAttr(spacing, "line", String(Math.round(options.paragraph.lineSpacing * 240))); 
       setAttr(spacing, "lineRule", "auto");
+      
       const ind = getOrCreate(pPr, "w:ind");
       setAttr(ind, "left", "0");
       setAttr(ind, "right", "0");
       setAttr(ind, "firstLine", String(Math.round(options.paragraph.indent * TWIPS_PER_CM)));
+      ind.removeAttributeNS(W_NS, "hanging");
+      ind.removeAttribute("w:hanging");
       
       const targetSize = options.font.sizeNormal * 2;
-      const runs = Array.from(p.getElementsByTagNameNS(W_NS, "r"));
+      const runs = Array.from(p.getElementsByTagNameNS(W_NS, "r")).concat(Array.from(p.getElementsByTagName("w:r")));
       for (const r of runs) {
+          const tNodes = Array.from(r.getElementsByTagName("w:t")).concat(Array.from(r.getElementsByTagNameNS(W_NS, "t")));
+          for (const t of tNodes) {
+              if (t.textContent) t.textContent = cleanPunctuation(t.textContent);
+          }
+
           const rPr = getOrCreate(r, "w:rPr");
           const sz = getOrCreate(rPr, "w:sz");
           setAttr(sz, "val", String(targetSize));
           const szCs = getOrCreate(rPr, "w:szCs");
           setAttr(szCs, "val", String(targetSize));
+
+          if (isHeading) {
+              const b = getOrCreate(rPr, "w:b");
+              setAttr(b, "val", "true");
+              const bCs = getOrCreate(rPr, "w:bCs");
+              setAttr(bCs, "val", "true");
+          }
 
           if (isBasisLine) {
               const iEl = getOrCreate(rPr, "w:i");
@@ -926,7 +1099,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       }
     }
 
-    // === XỬ LÝ BẢNG BIỂU NÂNG CAO ===
     const tables = Array.from(doc.getElementsByTagName("w:tbl"));
     if (tables.length === 0) tables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
 
@@ -943,7 +1115,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                 isHeaderRow = true;
             }
 
-            // QUÉT HÀNG TỔNG CỘNG
             const trTextNodes = Array.from(tr.getElementsByTagName("w:t")).concat(Array.from(tr.getElementsByTagNameNS(W_NS, "t")));
             const trText = trTextNodes.map(n => n.textContent || "").join("").toUpperCase();
             const isTotalRow = !isHeaderRow && (trText.includes("TỔNG CỘNG") || trText.includes("TỔNG SỐ") || trText.includes("TỔNG:"));
@@ -965,7 +1136,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
                 const tcParagraphs = Array.from(tc.getElementsByTagName("w:p"));
 
-                // Lấy Text của Cell để kiểm tra Cột STT hoặc Cột Số
                 const tcTextNodes = Array.from(tc.getElementsByTagName("w:t")).concat(Array.from(tc.getElementsByTagNameNS(W_NS, "t")));
                 const rawCellText = tcTextNodes.map(n => n.textContent || "").join("").trim();
                 
@@ -976,20 +1146,18 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                     }
                 }
 
-                // QUÉT CỘT SỐ: ĐÃ SỬA LỖI REGEX BẰNG CÁCH THÊM \ TRƯỚC DẤU -
                 const isNumericCell = rawCellText.length > 0 && /^[\(\[\-+]?[\d\.\,\s]+(?:vnđ|vnd|đ|%)?[\)\]]?$/i.test(rawCellText);
 
                 for (const p of tcParagraphs) {
                     const pPr = getOrCreate(p, "w:pPr");
                     const jc = getOrCreate(pPr, "w:jc");
                     
-                    // LOGIC CANH LỀ MỚI
                     if (isHeaderRow || logicalColIndex === sttColIndex) {
                         setAttr(jc, "val", "center");
                     } else if (!isHeaderRow && isNumericCell) {
-                        setAttr(jc, "val", "right"); // Canh phải cho Cột chứa toàn số
+                        setAttr(jc, "val", "right"); 
                     } else if (isTotalRow && logicalColIndex === 0 && rawCellText.toUpperCase().includes("TỔNG")) {
-                        setAttr(jc, "val", "center"); // Tùy chọn canh giữa cho nhãn "Tổng cộng" ở cột đầu
+                        setAttr(jc, "val", "center"); 
                     } else {
                         setAttr(jc, "val", "left");
                     }
@@ -1001,7 +1169,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                     ind.removeAttribute("w:hanging");
                     ind.removeAttributeNS(W_NS, "hanging");
 
-                    // CHUẨN HÓA KHOẢNG CÁCH: BEFORE = 0, AFTER = 0
                     const spacing = getOrCreate(pPr, "w:spacing");
                     setAttr(spacing, "before", "0");
                     setAttr(spacing, "after", "0");
@@ -1011,7 +1178,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                     const runs = Array.from(p.getElementsByTagName("w:r"));
                     
                     if (isHeaderRow) {
-                        const rawText = rawCellText; // Dùng lại text của cell
+                        const rawText = rawCellText; 
                         
                         const isLayoutText = /CỘNG HÒA|ĐỘC LẬP|UBND|TRƯỜNG|MẪU|SỞ|PHÒNG/i.test(rawText);
                         const hasLetters = /[A-ZÀ-Ỹa-zà-ỹ]/.test(rawText);
@@ -1059,7 +1226,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                         for (const r of runs) {
                             const rPr = getOrCreate(r, "w:rPr");
                             
-                            // IN ĐẬM HÀNG TỔNG CỘNG
                             if (isTotalRow) {
                                 const b = getOrCreate(rPr, "w:b");
                                 setAttr(b, "val", "true");
@@ -1077,7 +1243,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             }
         }
     }
-    // =============================
     
     if (options.headerType !== HeaderType.NONE && body) {
         const headerTable = createHeaderTemplate(doc, options);
@@ -1182,8 +1347,46 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
     const fontSize = options.font.sizeTable * 2;
     const fontFamily = options.font.family;
+    
+    const draftWatermarkXml = options.isDraft ? `
+        <w:p>
+            <w:pPr><w:jc w:val="center"/></w:pPr>
+            <w:r>
+                <w:rPr><w:noProof/></w:rPr>
+                <w:pict>
+                    <v:shapetype id="_x0000_t136" coordsize="21600,21600" o:spt="136" adj="10800" path="m@7,l@8,m@5,21600l@6,21600e">
+                        <v:formulas>
+                            <v:f eqn="sum #0 0 10800"/>
+                            <v:f eqn="prod #0 2 1"/>
+                            <v:f eqn="sum 21600 0 @1"/>
+                            <v:f eqn="sum 0 0 @2"/>
+                            <v:f eqn="sum 21600 0 @3"/>
+                            <v:f eqn="if @0 @3 0"/>
+                            <v:f eqn="if @0 21600 @1"/>
+                            <v:f eqn="if @0 0 @2"/>
+                            <v:f eqn="if @0 @4 21600"/>
+                            <v:f eqn="mid @5 @6"/>
+                            <v:f eqn="mid @8 @5"/>
+                            <v:f eqn="mid @7 @8"/>
+                            <v:f eqn="mid @6 @7"/>
+                            <v:f eqn="sum @6 0 @5"/>
+                        </v:formulas>
+                        <v:path textpathok="t" o:connecttype="custom" o:connectlocs="@9,0;@10,10800;@11,21600;@12,10800" o:connectangles="270,180,90,0"/>
+                        <v:textpath on="t" fitshape="t"/>
+                        <o:handles v="h,position,#0,bottomRight"/>
+                        <o:lock v="ext" shapetype="t"/>
+                    </v:shapetype>
+                    <v:shape id="WaterMarkObject1" o:spid="_x0000_s1025" type="#_x0000_t136" style="position:absolute;left:0;text-align:left;margin-left:0;margin-top:0;width:500pt;height:120pt;rotation:315;z-index:-251657216;mso-position-horizontal:center;mso-position-horizontal-relative:margin;mso-position-vertical:center;mso-position-vertical-relative:margin" o:allowincell="f" fillcolor="#d9d9d9" stroked="f">
+                        <v:fill opacity="0.3"/>
+                        <v:textpath style="font-family:&quot;${fontFamily}&quot;;font-size:1pt;font-weight:bold" string="DỰ THẢO"/>
+                        <w10:wrap anchorx="margin" anchory="margin"/>
+                    </v:shape>
+                </w:pict>
+            </w:r>
+        </w:p>` : '';
+
     const headerXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-    <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+    <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w10="urn:schemas-microsoft-com:office:word">
         <w:p>
             <w:pPr><w:jc w:val="center"/></w:pPr>
             <w:r>
@@ -1207,6 +1410,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                 <w:fldChar w:fldCharType="end"/>
             </w:r>
         </w:p>
+        ${draftWatermarkXml}
     </w:hdr>`;
     zip.file("word/header_custom.xml", headerXml);
 
@@ -1570,7 +1774,6 @@ const createHeaderTemplate = (doc: Document, options: any): Element => {
     return tbl;
 };
 
-// === ĐÃ GỘP THÀNH CÔNG AUTOSTAMP VÀ CHUẨN HÓA UNICODE (NFC) ===
 const createSignatureBlock = (doc: Document, options: any, docType: string): Element => {
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
     const getOrCreate = (parent: Element, tagName: string): Element => {
@@ -1694,7 +1897,6 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
         setAttr(mar, "type", "dxa");
     });
 
-    // === BƯỚC 1: ĐÃ CHUẨN HÓA UNICODE (NFC) VÀO CÁC BIẾN NÀY ===
     const signerTitle = options.signerTitle ? options.signerTitle.normalize("NFC").trim().toUpperCase() : "";
     const signerName = options.signerName ? options.signerName.normalize("NFC").trim() : "";
     const presiderName = options.presiderName ? options.presiderName.normalize("NFC").trim() : "";
@@ -1740,7 +1942,6 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
                 break;
 
             case HeaderType.DEPARTMENT:
-                // === BƯỚC 1: ĐÃ CHUẨN HÓA UNICODE (NFC) Ở NHÁNH NÀY ===
                 const approverTitle = options.approverTitle ? options.approverTitle.normalize("NFC").toUpperCase() : "";
                 const approverName = options.approverName ? options.approverName.normalize("NFC") : "";
 
