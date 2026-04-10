@@ -240,7 +240,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    // === TÍNH NĂNG: SMART ERASER ===
     if (options.headerType !== HeaderType.NONE) {
         const headTables = Array.from(doc.getElementsByTagName("w:tbl"));
         if (headTables.length === 0) headTables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
@@ -1571,7 +1570,7 @@ const createHeaderTemplate = (doc: Document, options: any): Element => {
     return tbl;
 };
 
-// === ĐÃ GỘP THÀNH CÔNG AUTOSTAMP VÀO ĐÂY ===
+// === ĐÃ GỘP THÀNH CÔNG AUTOSTAMP VÀ CHUẨN HÓA UNICODE (NFC) ===
 const createSignatureBlock = (doc: Document, options: any, docType: string): Element => {
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
     const getOrCreate = (parent: Element, tagName: string): Element => {
@@ -1695,10 +1694,11 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
         setAttr(mar, "type", "dxa");
     });
 
-    const signerTitle = options.signerTitle ? options.signerTitle.trim().toUpperCase() : "";
-    const signerName = options.signerName ? options.signerName.trim() : "";
-    const presiderName = options.presiderName ? options.presiderName.trim() : "";
-    const secretaryName = options.secretaryName ? options.secretaryName.trim() : "";
+    // === BƯỚC 1: ĐÃ CHUẨN HÓA UNICODE (NFC) VÀO CÁC BIẾN NÀY ===
+    const signerTitle = options.signerTitle ? options.signerTitle.normalize("NFC").trim().toUpperCase() : "";
+    const signerName = options.signerName ? options.signerName.normalize("NFC").trim() : "";
+    const presiderName = options.presiderName ? options.presiderName.normalize("NFC").trim() : "";
+    const secretaryName = options.secretaryName ? options.secretaryName.normalize("NFC").trim() : "";
 
     const addBlankLines = (tc: Element, count: number) => {
         for (let i = 0; i < count; i++) {
@@ -1740,8 +1740,9 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
                 break;
 
             case HeaderType.DEPARTMENT:
-                const approverTitle = options.approverTitle || "";
-                const approverName = options.approverName || "";
+                // === BƯỚC 1: ĐÃ CHUẨN HÓA UNICODE (NFC) Ở NHÁNH NÀY ===
+                const approverTitle = options.approverTitle ? options.approverTitle.normalize("NFC").toUpperCase() : "";
+                const approverName = options.approverName ? options.approverName.normalize("NFC") : "";
 
                 if (approverTitle || approverName) {
                     const actualApprTitle = approverTitle || "HIỆU TRƯỞNG";
