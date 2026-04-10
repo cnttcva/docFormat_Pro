@@ -880,7 +880,7 @@ export default function App() {
       
       <footer className="py-8 text-center relative z-10 bg-white/40 border-t border-slate-200/50 backdrop-blur-md">
          <p className="text-slate-500 text-[13px] font-medium tracking-wide">
-           <span className="opacity-70">DocFormat Pro V7.5 Ultimate &bull; Design by</span> <span className="bg-clip-text text-transparent bg-gradient-to-r from-violet-600 to-blue-600 font-bold">Lại Cao Đằng - Đắk Lắk</span>
+           <span className="opacity-70">DocFormat Pro V8.0 Ultimate &bull; Design by</span> <span className="bg-clip-text text-transparent bg-gradient-to-r from-violet-600 to-blue-600 font-bold">Lại Cao Đằng - Đắk Lắk</span>
          </p>
       </footer>
 
