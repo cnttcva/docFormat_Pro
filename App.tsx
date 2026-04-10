@@ -48,7 +48,7 @@ const dangSymbols = [
   { name: "Kế hoạch", value: "KH" }, 
   { name: "Chương trình", value: "CTr" },
   { name: "Thông báo", value: "TB" }, 
-  { name: "Thông tri", value: "TTr" },
+  { name: "Thông tri", value: "TT" },
   { name: "Công văn", value: "CV" }, 
   { name: "Tờ trình", value: "TTr" },
   { name: "Biên bản", value: "BB" }
