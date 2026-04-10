@@ -26,7 +26,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({ isOpen, onClose }) => {
                 </div>
                 <div>
                     <h2 className="text-xl font-bold text-white tracking-wide">HƯỚNG DẪN SỬ DỤNG</h2>
-                    <p className="text-blue-200 text-xs font-medium uppercase tracking-widest mt-0.5">DocFormat Pro V7.5 Ultimate</p>
+                    <p className="text-blue-200 text-xs font-medium uppercase tracking-widest mt-0.5">DocFormat Pro V8.0 Ultimate </p>
                 </div>
             </div>
             <button 
