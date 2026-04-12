@@ -342,7 +342,7 @@ export default function App() {
         <div className="text-center mb-10 space-y-4">
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-violet-50 to-cyan-50 border border-violet-100 shadow-sm text-violet-700 text-[11px] font-black uppercase tracking-widest mb-2">
             <Sparkles className="w-3.5 h-3.5 text-violet-500 animate-pulse" /> 
-            Phiên bản chuyển đổi số
+            Phiên bản chuyển đổi số - DocxService_v9.3_Absolute_Final
           </div>
           <h2 className="text-2xl sm:text-3xl md:text-4xl font-black text-slate-800 tracking-tight">
             Tự động hóa <span className="bg-clip-text text-transparent bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-600">Văn bản Hành chính</span>
