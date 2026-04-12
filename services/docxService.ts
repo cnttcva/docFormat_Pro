@@ -35,7 +35,50 @@ const ACRONYMS_LIST = [
 ];
 
 const setAttr = (el: Element, name: string, value: string) => {
-    el.setAttributeNS(W_NS, `w:${name}`, value);
+    try { el.setAttributeNS(W_NS, `w:${name}`, value); } catch(e) {}
+    el.setAttribute(`w:${name}`, value);
+};
+
+const getNodes = (parent: Element | Document, tagName: string): Element[] => {
+    let els = Array.from(parent.getElementsByTagName(`w:${tagName}`));
+    if (els.length === 0) els = Array.from(parent.getElementsByTagNameNS(W_NS, tagName));
+    if (els.length === 0) els = Array.from(parent.getElementsByTagName(tagName));
+    return els;
+};
+
+const getOrCreate = (parent: Element, tagName: string): Element => {
+    let child = getNodes(parent, tagName.replace("w:", ""))[0];
+    if (!child) {
+        child = parent.ownerDocument.createElementNS(W_NS, tagName);
+        if (tagName.endsWith("Pr") && parent.firstChild) {
+            parent.insertBefore(child, parent.firstChild);
+        } else {
+            parent.appendChild(child);
+        }
+    }
+    return child;
+};
+
+// CÔNG CỤ ÉP IN ĐẬM CHUẨN TƯƠNG THÍCH WEB 100%
+const forceBoldNode = (rPr: Element) => {
+    const b = getOrCreate(rPr, "w:b");
+    b.removeAttributeNS(W_NS, "val");
+    b.removeAttribute("w:val");
+    const bCs = getOrCreate(rPr, "w:bCs");
+    bCs.removeAttributeNS(W_NS, "val");
+    bCs.removeAttribute("w:val");
+};
+
+const forceParagraphBold = (pPr: Element) => {
+    const rPr = getOrCreate(pPr, "w:rPr");
+    forceBoldNode(rPr);
+};
+
+const removeBoldNode = (rPr: Element) => {
+    const bNodes = getNodes(rPr, "b");
+    bNodes.forEach(b => rPr.removeChild(b));
+    const bCsNodes = getNodes(rPr, "bCs");
+    bCsNodes.forEach(bCs => rPr.removeChild(bCs));
 };
 
 const smartNormalizeText = (text: string): string => {
@@ -99,13 +142,13 @@ const cleanPunctuation = (text: string): string => {
 };
 
 const isParagraphBold = (p: Element): boolean => {
-    const runs = Array.from(p.getElementsByTagNameNS(W_NS, "r"));
+    const runs = getNodes(p, "r");
     for (const r of runs) {
-        const t = r.getElementsByTagNameNS(W_NS, "t")[0];
+        const t = getNodes(r, "t")[0];
         if (t && t.textContent && t.textContent.trim().length > 0) {
-            const rPr = r.getElementsByTagNameNS(W_NS, "rPr")[0];
+            const rPr = getNodes(r, "rPr")[0];
             if (rPr) {
-                const b = rPr.getElementsByTagNameNS(W_NS, "b")[0];
+                const b = getNodes(rPr, "b")[0];
                 if (b) {
                     const val = b.getAttributeNS(W_NS, "val") || b.getAttribute("w:val");
                     if (val !== "false" && val !== "0") return true;
@@ -197,42 +240,24 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 
     const parser = new DOMParser();
     const doc = parser.parseFromString(docXmlContent, "application/xml");
-    const body = doc.getElementsByTagNameNS(W_NS, "body")[0] || doc.getElementsByTagName("w:body")[0];
+    const body = getNodes(doc, "body")[0];
     
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
-    const getOrCreate = (parent: Element, tagName: string): Element => {
-      let child = parent.getElementsByTagName(tagName)[0];
-      if (!child) {
-          const localName = tagName.includes(":") ? tagName.split(":")[1] : tagName;
-          child = parent.getElementsByTagNameNS(W_NS, localName)[0];
-      }
-      if (!child) {
-        child = doc.createElementNS(W_NS, tagName);
-        if (tagName.endsWith("Pr") && parent.firstChild) {
-            parent.insertBefore(child, parent.firstChild);
-        } else {
-            parent.appendChild(child);
-        }
-      }
-      return child;
-    };
 
     const isTableParagraph = (p: Element): boolean => {
       let parent = p.parentNode;
       while(parent) {
-        if (parent.nodeName === 'w:tbl' || parent.nodeName === 'tbl') return true;
+        const nodeName = parent.nodeName;
+        if (nodeName === 'w:tbl' || nodeName === 'tbl') return true;
         parent = parent.parentNode;
       }
       return false;
     };
 
-    const paragraphsForCleaning = Array.from(doc.getElementsByTagName("w:p"));
-    if (paragraphsForCleaning.length === 0) paragraphsForCleaning.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
+    const paragraphsForCleaning = getNodes(doc, "p");
 
     for (const p of paragraphsForCleaning) {
-        const textNodes = Array.from(p.getElementsByTagName("w:t"));
-        if (textNodes.length === 0) textNodes.push(...Array.from(p.getElementsByTagNameNS(W_NS, "t")));
-        
+        const textNodes = getNodes(p, "t");
         if (textNodes.length > 0) {
             const firstNode = textNodes[0];
             if (firstNode.textContent) firstNode.textContent = firstNode.textContent.trimStart();
@@ -242,21 +267,27 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
     }
 
     if (options.headerType !== HeaderType.NONE) {
-        const headTables = Array.from(doc.getElementsByTagName("w:tbl"));
-        if (headTables.length === 0) headTables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
-        
+        const headTables = getNodes(doc, "tbl");
         for (let i = 0; i < Math.min(4, headTables.length); i++) {
             const tbl = headTables[i];
             if (!tbl.parentNode) continue;
+            
+            const trs = getNodes(tbl, "tr");
+            let maxCols = 0;
+            if (trs.length > 0) {
+                 const tcs = getNodes(trs[0], "tc");
+                 maxCols = tcs.length;
+            }
+            if (maxCols > 2 || trs.length > 5) continue; 
+
             const text = tbl.textContent?.toUpperCase() || "";
-            if ((text.includes("CỘNG HÒA") || text.includes("ĐỘC LẬP") || text.includes("ĐẢNG CỘNG SẢN") || text.includes("UBND") || text.includes("SỞ ") || text.includes("TRƯỜNG ") || text.includes("TỔ ")) && text.length < 400) {
+            if ((text.includes("CỘNG HÒA") && text.includes("ĐỘC LẬP")) || 
+                (text.includes("ĐẢNG CỘNG SẢN") && text.includes("VIỆT NAM"))) {
                 tbl.parentNode.removeChild(tbl);
             }
         }
         
-        const headParagraphs = Array.from(doc.getElementsByTagName("w:p"));
-        if (headParagraphs.length === 0) headParagraphs.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
-        
+        const headParagraphs = getNodes(doc, "p");
         for (let i = 0; i < Math.min(20, headParagraphs.length); i++) {
             const p = headParagraphs[i];
             if (!p.parentNode || isTableParagraph(p)) continue;
@@ -270,21 +301,26 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    const tailTables = Array.from(doc.getElementsByTagName("w:tbl"));
-    if (tailTables.length === 0) tailTables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
-    
+    const tailTables = getNodes(doc, "tbl");
     for (let i = tailTables.length - 1; i >= Math.max(0, tailTables.length - 5); i--) {
         const tbl = tailTables[i];
         if (!tbl.parentNode) continue;
+        
+        const trs = getNodes(tbl, "tr");
+        let maxCols = 0;
+        if (trs.length > 0) {
+             const tcs = getNodes(trs[0], "tc");
+             maxCols = tcs.length;
+        }
+        if (maxCols > 2 || trs.length > 5) continue; 
+
         const text = tbl.textContent?.toUpperCase() || "";
-        if ((text.includes("NƠI NHẬN") || text.includes("HIỆU TRƯỞNG") || text.includes("GIÁM ĐỐC") || text.includes("CHỦ TỊCH") || text.includes("CHỦ TỌA") || text.includes("THƯ KÝ") || text.includes("TỔ TRƯỞNG")) && text.length < 1000) {
+        if ((text.includes("NƠI NHẬN") || text.includes("HIỆU TRƯỞNG") || text.includes("CHỦ TỊCH") || text.includes("T/M")) && text.length < 400) {
             tbl.parentNode.removeChild(tbl);
         }
     }
 
-    const tailParagraphs = Array.from(doc.getElementsByTagName("w:p"));
-    if (tailParagraphs.length === 0) tailParagraphs.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
-    
+    const tailParagraphs = getNodes(doc, "p");
     let stopTailScan = false;
     const signatureKeywords = [
         "NƠI NHẬN", "HIỆU TRƯỞNG", "GIÁM ĐỐC", "CHỦ TỊCH", "CHỦ TỌA", "THƯ KÝ", 
@@ -294,15 +330,20 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
     for (let i = tailParagraphs.length - 1; i >= Math.max(0, tailParagraphs.length - 40); i--) {
         if (stopTailScan) break;
         const p = tailParagraphs[i];
-        if (!p.parentNode || isTableParagraph(p)) continue;
         
+        if (isTableParagraph(p)) {
+            stopTailScan = true;
+            continue;
+        }
+        
+        if (!p.parentNode) continue;
         const text = p.textContent?.trim() || "";
         const upperText = text.toUpperCase();
         
-        const hasMedia = p.getElementsByTagName("w:drawing").length > 0 || 
-                         p.getElementsByTagName("w:pict").length > 0 || 
-                         p.getElementsByTagName("w:object").length > 0 || 
-                         p.getElementsByTagName("w:sectPr").length > 0;
+        const hasMedia = getNodes(p, "drawing").length > 0 || 
+                         getNodes(p, "pict").length > 0 || 
+                         getNodes(p, "object").length > 0 || 
+                         getNodes(p, "sectPr").length > 0;
                          
         if (upperText.length === 0 && !hasMedia) {
              p.parentNode.removeChild(p);
@@ -314,28 +355,29 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
 
         const isSigKeyword = signatureKeywords.some(k => upperText.includes(k));
-        const isBulletItem = (upperText.startsWith("-") || upperText.startsWith("+") || upperText.startsWith("•")) && text.length < 80;
-        const isShortNameOrDate = text.length < 40 && !upperText.includes(":") && !upperText.match(/^[0-9IVX]+\./);
+        const isNoiNhanBullet = (upperText.startsWith("-") || upperText.startsWith("+") || upperText.startsWith("•")) && 
+                                (upperText.includes("LƯU") || upperText.includes("B/C") || upperText.includes("T/H") || upperText.includes("NHƯ TRÊN") || upperText.includes("UBND") || upperText.includes("TRƯỜNG"));
+        
+        const isShortNameOrDate = text.length < 40 && !upperText.includes(":") && !upperText.match(/^[0-9IVX]+\./) && !upperText.startsWith("-");
 
-        if (isSigKeyword || isBulletItem || isShortNameOrDate) {
+        if (isSigKeyword || isNoiNhanBullet || isShortNameOrDate) {
             p.parentNode.removeChild(p);
         } else {
             stopTailScan = true; 
         }
     }
 
-    // === PHÂN TÍCH NUMBERING ĐỂ TRÁNH LỖI BULLET ===
     let listFormats: Record<string, string> = {}; 
     const numberingXmlContent = await zip.file("word/numbering.xml")?.async("string");
     if (numberingXmlContent) {
         const numDoc = parser.parseFromString(numberingXmlContent, "application/xml");
-        const nums = Array.from(numDoc.getElementsByTagNameNS(W_NS, "num")).concat(Array.from(numDoc.getElementsByTagName("w:num")));
-        const abstractNums = Array.from(numDoc.getElementsByTagNameNS(W_NS, "abstractNum")).concat(Array.from(numDoc.getElementsByTagName("w:abstractNum")));
+        const nums = getNodes(numDoc, "num");
+        const abstractNums = getNodes(numDoc, "abstractNum");
 
         const numToAbstractMap: Record<string, string> = {};
         for (const num of nums) {
             const numId = num.getAttributeNS(W_NS, "numId") || num.getAttribute("w:numId");
-            const absNumIdEl = num.getElementsByTagNameNS(W_NS, "abstractNumId")[0] || num.getElementsByTagName("w:abstractNumId")[0];
+            const absNumIdEl = getNodes(num, "abstractNumId")[0];
             if (numId && absNumIdEl) {
                 numToAbstractMap[numId] = absNumIdEl.getAttributeNS(W_NS, "val") || absNumIdEl.getAttribute("w:val") || "";
             }
@@ -351,10 +393,10 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             const absId = numToAbstractMap[numId];
             const absNum = absNumMap[absId];
             if (absNum) {
-                const lvls = Array.from(absNum.getElementsByTagNameNS(W_NS, "lvl")).concat(Array.from(absNum.getElementsByTagName("w:lvl")));
+                const lvls = getNodes(absNum, "lvl");
                 for (const lvl of lvls) {
                     const ilvl = lvl.getAttributeNS(W_NS, "ilvl") || lvl.getAttribute("w:ilvl");
-                    const numFmtEl = lvl.getElementsByTagNameNS(W_NS, "numFmt")[0] || lvl.getElementsByTagName("w:numFmt")[0];
+                    const numFmtEl = getNodes(lvl, "numFmt")[0];
                     const numFmt = numFmtEl ? (numFmtEl.getAttributeNS(W_NS, "val") || numFmtEl.getAttribute("w:val")) : "";
                     if (ilvl && numFmt) {
                         listFormats[`${numId}_${ilvl}`] = numFmt;
@@ -365,14 +407,14 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
     }
 
     if (options.removeNumbering) {
-        const allParagraphs = Array.from(doc.getElementsByTagNameNS(W_NS, "p")).concat(Array.from(doc.getElementsByTagName("w:p")));
+        const allParagraphs = getNodes(doc, "p");
         let listCounters: Record<string, number> = {};
 
         for (const p of allParagraphs) {
-            const pPr = p.getElementsByTagNameNS(W_NS, "pPr")[0] || p.getElementsByTagName("w:pPr")[0];
+            const pPr = getNodes(p, "pPr")[0];
             
             let fullText = "";
-            const pRunsForText = Array.from(p.getElementsByTagNameNS(W_NS, "r")).concat(Array.from(p.getElementsByTagName("w:r")));
+            const pRunsForText = getNodes(p, "r");
             for (const r of pRunsForText) {
                 Array.from(r.childNodes).forEach(child => {
                     const name = child.nodeName.replace("w:", "");
@@ -383,10 +425,10 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             fullText = fullText.trim();
 
             if (pPr) {
-                const numPr = pPr.getElementsByTagNameNS(W_NS, "numPr")[0] || pPr.getElementsByTagName("w:numPr")[0];
+                const numPr = getNodes(pPr, "numPr")[0];
                 if (numPr) {
-                    const ilvlEl = numPr.getElementsByTagNameNS(W_NS, "ilvl")[0] || numPr.getElementsByTagName("w:ilvl")[0];
-                    const numIdEl = numPr.getElementsByTagNameNS(W_NS, "numId")[0] || numPr.getElementsByTagName("w:numId")[0];
+                    const ilvlEl = getNodes(numPr, "ilvl")[0];
+                    const numIdEl = getNodes(numPr, "numId")[0];
                     
                     const ilvl = ilvlEl ? (ilvlEl.getAttributeNS(W_NS, "val") || ilvlEl.getAttribute("w:val") || "0") : "0";
                     const numId = numIdEl ? (numIdEl.getAttributeNS(W_NS, "val") || numIdEl.getAttribute("w:val") || "0") : "0";
@@ -402,7 +444,6 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                     if (!hasListPrefix && fullText.length > 0) {
                         let prefix = "";
                         
-                        // NẾU ĐỊNH DẠNG LÀ BULLET TRÒN -> KHÔNG CHÈN GÌ CẢ
                         if (numFmt === "bullet") {
                             prefix = ""; 
                         } else {
@@ -435,9 +476,9 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                 }
             }
 
-            const firstRun = p.getElementsByTagNameNS(W_NS, "r")[0] || p.getElementsByTagName("w:r")[0];
+            const firstRun = getNodes(p, "r")[0];
             if (firstRun) {
-                const firstText = firstRun.getElementsByTagNameNS(W_NS, "t")[0] || firstRun.getElementsByTagName("w:t")[0];
+                const firstText = getNodes(firstRun, "t")[0];
                 if (firstText && firstText.textContent) {
                     const bulletRegex = /^[\s]*([•\-\–\—\*])[\s]+/;
                     if (bulletRegex.test(firstText.textContent)) {
@@ -448,8 +489,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    let sectPrsDoc = Array.from(doc.getElementsByTagName("w:sectPr"));
-    if (sectPrsDoc.length === 0) sectPrsDoc = Array.from(doc.getElementsByTagNameNS(W_NS, "sectPr"));
+    const sectPrsDoc = getNodes(doc, "sectPr");
 
     for (const sectPr of sectPrsDoc) {
         let pgSz = Array.from(sectPr.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pgSz") as Element;
@@ -518,10 +558,17 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         setAttr(rFonts, "hAnsi", options.font.family);
         setAttr(rFonts, "cs", options.font.family);
         setAttr(rFonts, "eastAsia", options.font.family);
-        const b = getOrCreate(rPr, "w:b");
-        setAttr(b, "val", isBold ? "true" : "false"); 
-        const iEl = getOrCreate(rPr, "w:i");
-        setAttr(iEl, "val", "false");
+        
+        if (isBold) {
+            forceBoldNode(rPr);
+            forceParagraphBold(pPr);
+        } else {
+            removeBoldNode(rPr);
+        }
+        
+        const iEl = getNodes(rPr, "i")[0];
+        if (iEl) rPr.removeChild(iEl);
+        
         const sz = getOrCreate(rPr, "w:sz");
         setAttr(sz, "val", fontSize);
         const szCs = getOrCreate(rPr, "w:szCs");
@@ -631,8 +678,9 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         setAttr(rFonts, "hAnsi", options.font.family);
         setAttr(rFonts, "cs", options.font.family);
         setAttr(rFonts, "eastAsia", options.font.family);
-        const b = getOrCreate(rPr, "w:b");
-        setAttr(b, "val", "false"); 
+        
+        removeBoldNode(rPr);
+        
         const sz = getOrCreate(rPr, "w:sz");
         setAttr(sz, "val", String(options.font.sizeNormal * 2));
         const szCs = getOrCreate(rPr, "w:szCs");
@@ -645,8 +693,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         return p;
     };
 
-    const paragraphs = Array.from(doc.getElementsByTagName("w:p"));
-    if (paragraphs.length === 0) paragraphs.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
+    const paragraphs = getNodes(doc, "p");
     
     let detectedDocType = ""; 
     const docTypeElements = new Set<Element>();
@@ -739,11 +786,11 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                     const nodeName = nextNode.nodeName;
                     if (nodeName === "w:p" || nodeName === "p") {
                         const el = nextNode as Element;
-                        const textNodes = Array.from(el.getElementsByTagName("w:t")).concat(Array.from(el.getElementsByTagNameNS(W_NS, "t")));
+                        const textNodes = getNodes(el, "t");
                         const text = textNodes.map(n => n.textContent || "").join("").trim();
                         
                         let hasPageBreak = false;
-                        const brs = Array.from(el.getElementsByTagName("w:br")).concat(Array.from(el.getElementsByTagNameNS(W_NS, "br")));
+                        const brs = getNodes(el, "br");
                         for (const br of brs) {
                             if (br.getAttribute("w:type") === "page" || br.getAttributeNS(W_NS, "type") === "page") {
                                 hasPageBreak = true;
@@ -787,8 +834,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    const finalParagraphs = Array.from(doc.getElementsByTagName("w:p"));
-    if (finalParagraphs.length === 0) finalParagraphs.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "p")));
+    const finalParagraphs = getNodes(doc, "p");
 
     let inKinhGuiBlock = false;
     let addSpaceBeforeMainContent = false;
@@ -829,13 +875,13 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       const rawTextForEmptyCheck = pText.replace(/[\s\u200B-\u200D\uFEFF\xA0]+/g, '');
       
       if (isBodyArea && rawTextForEmptyCheck.length === 0 && !isTable) {
-          const hasDrawing = p.getElementsByTagName("w:drawing").length > 0 || p.getElementsByTagNameNS(W_NS, "drawing").length > 0;
-          const hasPict = p.getElementsByTagName("w:pict").length > 0 || p.getElementsByTagNameNS(W_NS, "pict").length > 0;
-          const hasObject = p.getElementsByTagName("w:object").length > 0 || p.getElementsByTagNameNS(W_NS, "object").length > 0;
-          const hasSectPr = p.getElementsByTagName("w:sectPr").length > 0 || p.getElementsByTagNameNS(W_NS, "sectPr").length > 0;
+          const hasDrawing = getNodes(p, "drawing").length > 0 || getNodes(p, "drawing").length > 0;
+          const hasPict = getNodes(p, "pict").length > 0;
+          const hasObject = getNodes(p, "object").length > 0;
+          const hasSectPr = getNodes(p, "sectPr").length > 0;
           
           let hasPageBreak = false;
-          const brs = Array.from(p.getElementsByTagName("w:br")).concat(Array.from(p.getElementsByTagNameNS(W_NS, "br")));
+          const brs = getNodes(p, "br");
           for (const br of brs) {
               if (br.getAttribute("w:type") === "page" || br.getAttributeNS(W_NS, "type") === "page") {
                   hasPageBreak = true;
@@ -855,7 +901,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       const pPr = getOrCreate(p, "w:pPr");
 
       let startTrimmed = false;
-      const runsForTrim = Array.from(p.getElementsByTagNameNS(W_NS, "r")).concat(Array.from(p.getElementsByTagName("w:r")));
+      const runsForTrim = getNodes(p, "r");
       for (const r of runsForTrim) {
           if (startTrimmed) break;
           const children = Array.from(r.childNodes);
@@ -880,7 +926,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
           }
       }
 
-      const contextualSpacing = pPr.getElementsByTagNameNS(W_NS, "contextualSpacing")[0] || pPr.getElementsByTagName("w:contextualSpacing")[0];
+      const contextualSpacing = getNodes(pPr, "contextualSpacing")[0];
       if (contextualSpacing) {
           contextualSpacing.parentNode?.removeChild(contextualSpacing);
       }
@@ -902,22 +948,21 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
               setAttr(spacing, "after", "0");
 
               const targetSize = options.font.sizeNormal * 2;
-              const runs = Array.from(p.getElementsByTagName("w:r"));
-              if (runs.length === 0) runs.push(...Array.from(p.getElementsByTagNameNS(W_NS, "r")));
+              const runs = getNodes(p, "r");
               
               for (const r of runs) {
                   const rPr = getOrCreate(r, "w:rPr");
-                  const b = getOrCreate(rPr, "w:b");
-                  setAttr(b, "val", "true"); 
+                  forceBoldNode(rPr);
                   
-                  const iEl = rPr.getElementsByTagName("w:i")[0] || rPr.getElementsByTagNameNS(W_NS, "i")[0];
-                  if (iEl) setAttr(iEl, "val", "false"); 
+                  const iEl = getNodes(rPr, "i")[0];
+                  if (iEl) rPr.removeChild(iEl); 
                   
                   const sz = getOrCreate(rPr, "w:sz");
                   setAttr(sz, "val", String(targetSize));
                   const szCs = getOrCreate(rPr, "w:szCs");
                   setAttr(szCs, "val", String(targetSize));
               }
+              forceParagraphBold(pPr);
               continue; 
           }
 
@@ -937,22 +982,21 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                   setAttr(spacing, "after", "0");
 
                   const targetSize = options.font.sizeNormal * 2;
-                  const runs = Array.from(p.getElementsByTagName("w:r"));
-                  if (runs.length === 0) runs.push(...Array.from(p.getElementsByTagNameNS(W_NS, "r")));
+                  const runs = getNodes(p, "r");
                   
                   for (const r of runs) {
                       const rPr = getOrCreate(r, "w:rPr");
-                      const b = getOrCreate(rPr, "w:b");
-                      setAttr(b, "val", "true"); 
+                      forceBoldNode(rPr);
                       
-                      const iEl = rPr.getElementsByTagName("w:i")[0] || rPr.getElementsByTagNameNS(W_NS, "i")[0];
-                      if (iEl) setAttr(iEl, "val", "false");
+                      const iEl = getNodes(rPr, "i")[0];
+                      if (iEl) rPr.removeChild(iEl);
                       
                       const sz = getOrCreate(rPr, "w:sz");
                       setAttr(sz, "val", String(targetSize));
                       const szCs = getOrCreate(rPr, "w:szCs");
                       setAttr(szCs, "val", String(targetSize));
                   }
+                  forceParagraphBold(pPr);
                   continue;
               } else if (trimmedPTextOriginal.length > 0) {
                   inKinhGuiBlock = false;
@@ -987,21 +1031,22 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         ind.removeAttribute("w:hanging");
 
         const targetSize = options.font.sizeNormal * 2;
-        const runs = Array.from(p.getElementsByTagNameNS(W_NS, "r"));
+        const runs = getNodes(p, "r");
         for (const r of runs) {
             const rPr = getOrCreate(r, "w:rPr");
-            const b = getOrCreate(rPr, "w:b");
-            setAttr(b, "val", "true");
+            forceBoldNode(rPr);
+            
             const sz = getOrCreate(rPr, "w:sz");
             setAttr(sz, "val", String(targetSize));
             const szCs = getOrCreate(rPr, "w:szCs");
             setAttr(szCs, "val", String(targetSize));
         }
+        forceParagraphBold(pPr);
         continue; 
       }
 
       let pTextParsed = "";
-      const runsForText = Array.from(p.getElementsByTagNameNS(W_NS, "r")).concat(Array.from(p.getElementsByTagName("w:r")));
+      const runsForText = getNodes(p, "r");
       for (const r of runsForText) {
           Array.from(r.childNodes).forEach(child => {
               const name = child.nodeName.replace("w:", "");
@@ -1036,7 +1081,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       }
 
       if (isRomanHeading && isHeading) {
-          const tNodesForUpper = Array.from(p.getElementsByTagNameNS(W_NS, "t")).concat(Array.from(p.getElementsByTagName("w:t")));
+          const tNodesForUpper = getNodes(p, "t");
           for (const t of tNodesForUpper) {
               if (t.textContent) t.textContent = t.textContent.toUpperCase();
           }
@@ -1065,9 +1110,9 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
       ind.removeAttribute("w:hanging");
       
       const targetSize = options.font.sizeNormal * 2;
-      const runs = Array.from(p.getElementsByTagNameNS(W_NS, "r")).concat(Array.from(p.getElementsByTagName("w:r")));
+      const runs = getNodes(p, "r");
       for (const r of runs) {
-          const tNodes = Array.from(r.getElementsByTagName("w:t")).concat(Array.from(r.getElementsByTagNameNS(W_NS, "t")));
+          const tNodes = getNodes(r, "t");
           for (const t of tNodes) {
               if (t.textContent) t.textContent = cleanPunctuation(t.textContent);
           }
@@ -1079,43 +1124,66 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
           setAttr(szCs, "val", String(targetSize));
 
           if (isHeading) {
-              const b = getOrCreate(rPr, "w:b");
-              setAttr(b, "val", "true");
-              const bCs = getOrCreate(rPr, "w:bCs");
-              setAttr(bCs, "val", "true");
+              forceBoldNode(rPr);
           }
 
           if (isBasisLine) {
-              const iEl = getOrCreate(rPr, "w:i");
-              setAttr(iEl, "val", isItalicBasis ? "true" : "false");
-              const iCsEl = getOrCreate(rPr, "w:iCs");
-              setAttr(iCsEl, "val", isItalicBasis ? "true" : "false");
-              
-              const bEl = getOrCreate(rPr, "w:b");
-              setAttr(bEl, "val", "false");
-              const bCsEl = getOrCreate(rPr, "w:bCs");
-              setAttr(bCsEl, "val", "false");
+              if (isItalicBasis) {
+                  const iEl = getOrCreate(rPr, "w:i");
+                  setAttr(iEl, "val", "true");
+                  const iCsEl = getOrCreate(rPr, "w:iCs");
+                  setAttr(iCsEl, "val", "true");
+              } else {
+                  const iEl = getNodes(rPr, "i")[0];
+                  if (iEl) rPr.removeChild(iEl);
+                  const iCsEl = getNodes(rPr, "iCs")[0];
+                  if (iCsEl) rPr.removeChild(iCsEl);
+              }
+              removeBoldNode(rPr);
           }
+      }
+      
+      if (isHeading) {
+          forceParagraphBold(pPr);
       }
     }
 
-    const tables = Array.from(doc.getElementsByTagName("w:tbl"));
-    if (tables.length === 0) tables.push(...Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")));
+    const tables = getNodes(doc, "tbl");
 
     for (const tbl of tables) {
         let sttColIndex = -1;
 
-        const rows = Array.from(tbl.getElementsByTagName("w:tr"));
+        const rows = getNodes(tbl, "tr");
+        
+        for (let rIndex = 0; rIndex < rows.length; rIndex++) {
+            const tr = rows[rIndex];
+            const cells = getNodes(tr, "tc");
+            let logicalColIndex = 0;
+            for (const tc of cells) {
+                const gridSpanEl = getNodes(tc, "gridSpan")[0];
+                const gridSpan = gridSpanEl ? parseInt(gridSpanEl.getAttributeNS(W_NS, "val") || gridSpanEl.getAttribute("w:val") || "1") : 1;
+                
+                const tcTextNodes = getNodes(tc, "t");
+                const rawCellText = tcTextNodes.map(n => n.textContent || "").join("");
+                const cleanTextForStt = rawCellText.toUpperCase().replace(/[\.\s\t\u200B-\u200D\uFEFF\xA0]/g, '');
+                
+                if (sttColIndex === -1 && (cleanTextForStt === "STT" || cleanTextForStt === "SỐTT" || cleanTextForStt === "TT")) {
+                    sttColIndex = logicalColIndex;
+                }
+                logicalColIndex += gridSpan;
+            }
+        }
+
         for (let rIndex = 0; rIndex < rows.length; rIndex++) {
             const tr = rows[rIndex];
             const trPr = getOrCreate(tr, "w:trPr");
 
             let isHeaderRow = (rIndex === 0);
-            if (!isHeaderRow && trPr.getElementsByTagName("w:tblHeader").length > 0) {
+            if (!isHeaderRow && getNodes(trPr, "tblHeader").length > 0) {
                 isHeaderRow = true;
             }
 
-            const trTextNodes = Array.from(tr.getElementsByTagName("w:t")).concat(Array.from(tr.getElementsByTagNameNS(W_NS, "t")));
+            const trTextNodes = getNodes(tr, "t");
             const trText = trTextNodes.map(n => n.textContent || "").join("").toUpperCase();
             const isTotalRow = !isHeaderRow && (trText.includes("TỔNG CỘNG") || trText.includes("TỔNG SỐ") || trText.includes("TỔNG:"));
 
@@ -1123,7 +1191,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
             setAttr(trHeight, "val", String(Math.round(options.table.rowHeight * TWIPS_PER_CM))); 
             setAttr(trHeight, "hRule", "atLeast"); 
 
-            const cells = Array.from(tr.getElementsByTagName("w:tc"));
+            const cells = getNodes(tr, "tc");
             let logicalColIndex = 0;
 
             for (const tc of cells) {
@@ -1131,22 +1199,14 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                 const vAlign = getOrCreate(tcPr, "w:vAlign");
                 setAttr(vAlign, "val", "center"); 
                 
-                const gridSpanEl = tcPr.getElementsByTagName("w:gridSpan")[0];
-                const gridSpan = gridSpanEl ? parseInt(gridSpanEl.getAttribute("w:val") || "1") : 1;
+                const gridSpanEl = getNodes(tc, "gridSpan")[0];
+                const gridSpan = gridSpanEl ? parseInt(gridSpanEl.getAttributeNS(W_NS, "val") || gridSpanEl.getAttribute("w:val") || "1") : 1;
 
-                const tcParagraphs = Array.from(tc.getElementsByTagName("w:p"));
-
-                const tcTextNodes = Array.from(tc.getElementsByTagName("w:t")).concat(Array.from(tc.getElementsByTagNameNS(W_NS, "t")));
-                const rawCellText = tcTextNodes.map(n => n.textContent || "").join("").trim();
+                const tcParagraphs = getNodes(tc, "p");
+                const tcTextNodesAll = getNodes(tc, "t");
+                const rawCellTextFull = tcTextNodesAll.map(n => n.textContent || "").join("").trim();
                 
-                if (isHeaderRow) {
-                    const cleanText = rawCellText.toUpperCase().replace(/\./g, '');
-                    if (cleanText === "STT" || cleanText === "SỐ TT") {
-                        sttColIndex = logicalColIndex;
-                    }
-                }
-
-                const isNumericCell = rawCellText.length > 0 && /^[\(\[\-+]?[\d\.\,\s]+(?:vnđ|vnd|đ|%)?[\)\]]?$/i.test(rawCellText);
+                const isNumericCell = rawCellTextFull.length > 0 && /^[\(\[\-+]?[\d\.\,\s\t\u200B-\u200D\uFEFF\xA0]+(?:vnđ|vnd|đ|%)?[\)\]]?$/i.test(rawCellTextFull);
 
                 for (const p of tcParagraphs) {
                     const pPr = getOrCreate(p, "w:pPr");
@@ -1156,7 +1216,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                         setAttr(jc, "val", "center");
                     } else if (!isHeaderRow && isNumericCell) {
                         setAttr(jc, "val", "right"); 
-                    } else if (isTotalRow && logicalColIndex === 0 && rawCellText.toUpperCase().includes("TỔNG")) {
+                    } else if (isTotalRow && logicalColIndex === 0 && rawCellTextFull.toUpperCase().includes("TỔNG")) {
                         setAttr(jc, "val", "center"); 
                     } else {
                         setAttr(jc, "val", "left");
@@ -1175,68 +1235,69 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                     setAttr(spacing, "line", "240"); 
                     setAttr(spacing, "lineRule", "auto");
 
-                    const runs = Array.from(p.getElementsByTagName("w:r"));
+                    const runs = getNodes(p, "r");
                     
                     if (isHeaderRow) {
-                        const rawText = rawCellText; 
+                        const pTextNodes = getNodes(p, "t");
+                        const rawPText = pTextNodes.map(n => n.textContent || "").join("");
+                        const rawPTextTrimmed = rawPText.trim();
+                        if (rawPTextTrimmed.length === 0) continue;
                         
-                        const isLayoutText = /CỘNG HÒA|ĐỘC LẬP|UBND|TRƯỜNG|MẪU|SỞ|PHÒNG/i.test(rawText);
-                        const hasLetters = /[A-ZÀ-Ỹa-zà-ỹ]/.test(rawText);
+                        const isLayoutText = /CỘNG HÒA|ĐỘC LẬP|UBND|TRƯỜNG|MẪU|SỞ|PHÒNG/i.test(rawPTextTrimmed);
+                        const hasLetters = /[A-ZÀ-Ỹa-zà-ỹ]/.test(rawPTextTrimmed);
                         
-                        if (hasLetters && !isLayoutText && rawText.length < 100) {
-                            const cleanT = normalizeTableHeader(rawText);
-                            Array.from(p.childNodes).forEach(child => {
-                                const localName = child.nodeName.includes(":") ? child.nodeName.split(":")[1] : child.nodeName;
-                                if (localName !== "pPr") p.removeChild(child);
-                            });
+                        if (hasLetters && !isLayoutText && rawPTextTrimmed.length < 100) {
+                            let isFirstCharFound = false;
+                            for (const t of pTextNodes) {
+                                if (t.textContent) {
+                                    let txt = t.textContent.toLowerCase();
+                                    if (!isFirstCharFound && /[a-zà-ỹ]/i.test(txt)) {
+                                        txt = txt.replace(/[a-zà-ỹ]/i, match => match.toUpperCase());
+                                        isFirstCharFound = true;
+                                    }
+                                    ACRONYMS_LIST.forEach(acro => {
+                                        const regex = new RegExp(`(^|[^a-zà-ỹA-ZÀ-Ỹ0-9_])(${acro})([^a-zà-ỹA-ZÀ-Ỹ0-9_]|$)`, 'gi');
+                                        txt = txt.replace(regex, (m, p1, p2, p3) => p1 + acro + p3);
+                                    });
+                                    t.textContent = txt; 
+                                }
+                            }
                             
-                            const r = doc.createElementNS(W_NS, "w:r");
-                            const rPr = doc.createElementNS(W_NS, "w:rPr");
-                            r.appendChild(rPr);
-                            
-                            const b = doc.createElementNS(W_NS, "w:b");
-                            setAttr(b, "val", "true"); 
-                            rPr.appendChild(b);
-                            
-                            const targetSz = String(options.font.sizeTable * 2);
-                            const sz = doc.createElementNS(W_NS, "w:sz");
-                            setAttr(sz, "val", targetSz); 
-                            rPr.appendChild(sz);
-                            const szCs = doc.createElementNS(W_NS, "w:szCs");
-                            setAttr(szCs, "val", targetSz);
-                            rPr.appendChild(szCs);
-                            
-                            const t = doc.createElementNS(W_NS, "w:t");
-                            t.textContent = cleanT;
-                            r.appendChild(t);
-                            p.appendChild(r);
-                        } else {
                             for (const r of runs) {
                                 const rPr = getOrCreate(r, "w:rPr");
-                                const b = getOrCreate(rPr, "w:b");
-                                setAttr(b, "val", "true");
+                                forceBoldNode(rPr);
                                 const targetSz = String(options.font.sizeTable * 2);
                                 const sz = getOrCreate(rPr, "w:sz");
                                 setAttr(sz, "val", targetSz);
                                 const szCs = getOrCreate(rPr, "w:szCs");
                                 setAttr(szCs, "val", targetSz);
                             }
+                            forceParagraphBold(pPr);
+                        } else {
+                            for (const r of runs) {
+                                const rPr = getOrCreate(r, "w:rPr");
+                                forceBoldNode(rPr);
+                                const targetSz = String(options.font.sizeTable * 2);
+                                const sz = getOrCreate(rPr, "w:sz");
+                                setAttr(sz, "val", targetSz);
+                                const szCs = getOrCreate(rPr, "w:szCs");
+                                setAttr(szCs, "val", targetSz);
+                            }
+                            forceParagraphBold(pPr);
                         }
                     } else {
                         for (const r of runs) {
                             const rPr = getOrCreate(r, "w:rPr");
-                            
                             if (isTotalRow) {
-                                const b = getOrCreate(rPr, "w:b");
-                                setAttr(b, "val", "true");
+                                forceBoldNode(rPr);
                             }
-
                             const targetSz = String(options.font.sizeTable * 2);
                             const sz = getOrCreate(rPr, "w:sz");
                             setAttr(sz, "val", targetSz); 
                             const szCs = getOrCreate(rPr, "w:szCs");
                             setAttr(szCs, "val", targetSz);
                         }
+                        if (isTotalRow) forceParagraphBold(pPr);
                     }
                 }
                 logicalColIndex += gridSpan;
@@ -1249,7 +1310,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         if (body.firstChild) body.insertBefore(headerTable, body.firstChild);
         else body.appendChild(headerTable);
 
-        const sectPrs = Array.from(doc.getElementsByTagName("w:sectPr"));
+        const sectPrs = getNodes(doc, "sectPr");
         const lastSectPr = sectPrs.length > 0 ? sectPrs[sectPrs.length - 1] : null;
         
         const blankP = doc.createElementNS(W_NS, "w:p");
@@ -1264,12 +1325,12 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
         }
     }
 
-    const allRunsInDoc = Array.from(doc.getElementsByTagName("w:r"));
+    const allRunsInDoc = getNodes(doc, "r");
     for (const r of allRunsInDoc) { getOrCreate(r, "w:rPr"); }
-    const allPPrsInDoc = Array.from(doc.getElementsByTagName("w:pPr"));
+    const allPPrsInDoc = getNodes(doc, "pPr");
     for (const pPr of allPPrsInDoc) { getOrCreate(pPr, "w:rPr"); }
 
-    const allRPrs = Array.from(doc.getElementsByTagName("w:rPr"));
+    const allRPrs = getNodes(doc, "rPr");
     for (const rPr of allRPrs) {
         const rFonts = getOrCreate(rPr, "w:rFonts");
         setAttr(rFonts, "ascii", options.font.family);
@@ -1302,7 +1363,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
                 return child;
             };
             
-            const rPrsExt = Array.from(extDoc.getElementsByTagName("w:rPr"));
+            const rPrsExt = getNodes(extDoc, "rPr");
             for (const rPr of rPrsExt) {
                 const rFonts = getOrCreateExt(rPr, "w:rFonts");
                 setAttr(rFonts, "ascii", options.font.family);
@@ -1323,7 +1384,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
     await modifyXmlFonts("word/styles.xml");
     await modifyXmlFonts("word/numbering.xml");
 
-    const sectPrs = Array.from(doc.getElementsByTagName("w:sectPr"));
+    const sectPrs = getNodes(doc, "sectPr");
     for (const sPr of sectPrs) {
         let titlePg = sPr.getElementsByTagName("w:titlePg")[0];
         if (!titlePg) {
@@ -1445,7 +1506,7 @@ export const processDocx = async (file: File, options: any = DEFAULT_OPTIONS): P
 const createHeaderTemplate = (doc: Document, options: any): Element => {
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
     const getOrCreate = (parent: Element, tagName: string): Element => {
-      let child = parent.getElementsByTagName(tagName)[0];
+      let child = getNodes(parent, tagName.replace("w:", ""))[0];
       if (!child) {
         child = doc.createElementNS(W_NS, tagName);
         if (tagName.endsWith("Pr") && parent.firstChild) {
@@ -1488,11 +1549,19 @@ const createHeaderTemplate = (doc: Document, options: any): Element => {
         setAttr(sz, "val", String(sizeToUse));
         const szCs = getOrCreate(rPr, "w:szCs");
         setAttr(szCs, "val", String(sizeToUse));
-        if (isBold) rPr.appendChild(createElement("w:b"));
-        if (isItalic) rPr.appendChild(createElement("w:i"));
+        
+        if (isBold) {
+            forceBoldNode(rPr);
+        }
+        if (isItalic) {
+            const i = getOrCreate(rPr, "w:i");
+            setAttr(i, "val", "true");
+        }
         const t = createElement("w:t");
         t.textContent = text;
         r.appendChild(t);
+        
+        if (isBold) forceParagraphBold(pPr);
         return p;
     };
 
@@ -1518,11 +1587,16 @@ const createHeaderTemplate = (doc: Document, options: any): Element => {
         setAttr(sz, "val", String(sizeToUse));
         const szCs = getOrCreate(rPr, "w:szCs");
         setAttr(szCs, "val", String(sizeToUse));
-        if (isBold) rPr.appendChild(createElement("w:b"));
+        
+        if (isBold) {
+            forceBoldNode(rPr);
+        }
         
         const t = createElement("w:t");
         t.textContent = text;
         r.appendChild(t);
+        
+        if (isBold) forceParagraphBold(pPr);
         return p;
     };
 
@@ -1777,7 +1851,7 @@ const createHeaderTemplate = (doc: Document, options: any): Element => {
 const createSignatureBlock = (doc: Document, options: any, docType: string): Element => {
     const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
     const getOrCreate = (parent: Element, tagName: string): Element => {
-      let child = parent.getElementsByTagName(tagName)[0];
+      let child = getNodes(parent, tagName.replace("w:", ""))[0];
       if (!child) {
         child = doc.createElementNS(W_NS, tagName);
         if (tagName.endsWith("Pr") && parent.firstChild) {
@@ -1820,14 +1894,15 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
         setAttr(sz, "val", String(sizeToUse)); 
         const szCs = getOrCreate(rPr, "w:szCs");
         setAttr(szCs, "val", String(sizeToUse));
+        
         if (isBold) {
-            const b = getOrCreate(rPr, "w:b");
-            setAttr(b, "val", "true");
+            forceBoldNode(rPr);
         }
         if (isItalic) {
             const i = getOrCreate(rPr, "w:i");
-            setAttr(i, "val", "true");
+            i.removeAttributeNS(W_NS, "val"); i.removeAttribute("w:val");
         }
+        
         if (isUnderline) {
             const u = getOrCreate(rPr, "w:u");
             setAttr(u, "val", "single");
@@ -1835,6 +1910,8 @@ const createSignatureBlock = (doc: Document, options: any, docType: string): Ele
         const t = createElement("w:t");
         t.textContent = text;
         r.appendChild(t);
+        
+        if (isBold) forceParagraphBold(pPr);
         return p;
     };
 
