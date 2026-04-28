@@ -1,22 +1,26 @@
 // File: src/components/UserGuide.tsx
 import React from 'react';
 import {
-  X,
   BookOpen,
-  MonitorSmartphone,
-  ShieldCheck,
-  Settings2,
-  UploadCloud,
-  Sparkles,
-  FileDown,
+  X,
   CheckCircle2,
-  Info,
-  Lightbulb,
-  Laptop,
-  Globe,
+  UploadCloud,
+  Settings2,
+  FileDown,
+  Sparkles,
+  AlertTriangle,
+  Monitor,
+  ShieldCheck,
+  Download,
+  RefreshCw,
   FileText,
-  LockKeyhole,
-  ChevronRight,
+  PlayCircle,
+  MousePointerClick,
+  FolderOpen,
+  Power,
+  Globe2,
+  HelpCircle,
+  Laptop,
 } from 'lucide-react';
 
 interface UserGuideProps {
@@ -24,343 +28,417 @@ interface UserGuideProps {
   onClose: () => void;
 }
 
-type GuideStep = {
-  step: string;
-  title: string;
+const SoftBadge = ({ children }: { children: React.ReactNode }) => (
+  <span className="inline-flex items-center rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-indigo-700">
+    {children}
+  </span>
+);
+
+const CodeText = ({ children }: { children: React.ReactNode }) => (
+  <span className="rounded-lg border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-[12px] font-bold text-slate-700">
+    {children}
+  </span>
+);
+
+const SectionCard = ({
+  icon,
+  title,
+  children,
+  accent = 'from-indigo-500 to-blue-500',
+}: {
   icon: React.ReactNode;
-  color: string;
-  bg: string;
-  border: string;
-  items: string[];
-  tip?: string;
-};
+  title: string;
+  children: React.ReactNode;
+  accent?: string;
+}) => (
+  <section className="relative overflow-hidden rounded-[1.7rem] border border-slate-200 bg-white shadow-sm">
+    <div className={`absolute left-0 top-0 h-full w-1.5 bg-gradient-to-b ${accent}`} />
 
-const guideSteps: GuideStep[] = [
-  {
-    step: 'A',
-    title: 'Hướng dẫn cài đặt ứng dụng',
-    icon: <MonitorSmartphone className="w-6 h-6" />,
-    color: 'text-cyan-700',
-    bg: 'bg-cyan-50',
-    border: 'border-cyan-200',
-    items: [
-      'Mở docFormat Pro bằng trình duyệt Google Chrome hoặc Microsoft Edge.',
-      'Quan sát phía trên thanh địa chỉ, nếu trình duyệt hỗ trợ cài ứng dụng sẽ xuất hiện biểu tượng cài đặt ứng dụng.',
-      'Nhấn vào biểu tượng cài đặt rồi chọn “Cài đặt / Install”.',
-      'Sau khi cài xong, ngoài màn hình Desktop sẽ có biểu tượng docFormat Pro để mở nhanh.',
-      'Từ những lần sau, bạn có thể mở ứng dụng từ Desktop mà không cần nhập lại đường link.',
-    ],
-    tip: 'Khuyến nghị dùng Chrome hoặc Edge để chức năng cài ứng dụng ra Desktop hoạt động ổn định nhất.',
-  },
-  {
-    step: '1',
-    title: 'Đăng ký và kích hoạt bản quyền',
-    icon: <ShieldCheck className="w-6 h-6" />,
-    color: 'text-emerald-700',
-    bg: 'bg-emerald-50',
-    border: 'border-emerald-200',
-    items: [
-      'Khi mở ứng dụng lần đầu, nếu chưa được cấp quyền sử dụng, hãy nhấn “Đăng ký bản quyền”.',
-      'Chọn đúng trường hợp: “Trường đã có mã định danh” hoặc “Trường đăng ký bản quyền lần đầu”.',
-      'Nếu trường đã có mã định danh, nhập mã của đơn vị, ví dụ: THCS_CVA, rồi gửi yêu cầu cấp phép cho thiết bị hiện tại.',
-      'Nếu đăng ký lần đầu, điền thông tin đơn vị để Admin tạo hồ sơ bản quyền mới.',
-      'Sau khi Admin duyệt, thiết bị sẽ được mở khóa và có thể sử dụng đầy đủ chức năng.',
-    ],
-    tip: 'Mỗi đơn vị chỉ có một mã định danh duy nhất, nhưng có thể kích hoạt tối đa 15 thiết bị.',
-  },
-  {
-    step: '2',
-    title: 'Thiết lập thông số AI',
-    icon: <Settings2 className="w-6 h-6" />,
-    color: 'text-violet-700',
-    bg: 'bg-violet-50',
-    border: 'border-violet-200',
-    items: [
-      'Nhấn “Tùy chỉnh Thông số AI” để mở bảng cấu hình.',
-      'Chọn đúng loại văn bản: Không tiêu đề, Hành chính nhà trường, Công tác Đảng hoặc Tổ chuyên môn.',
-      'Nếu là biên bản, nhập Chủ tọa và Thư ký.',
-      'Nếu là công văn, nhập trích yếu, số ký hiệu, ngày ban hành và thông tin người ký.',
-      'Kiểm tra lại lề trang, font chữ, cỡ chữ, giãn dòng, thụt đầu dòng và các tùy chọn nâng cao trước khi xử lý.',
-    ],
-    tip: 'docFormat Pro có thể ghi nhớ một số thông tin thường dùng để giúp thao tác nhanh hơn ở những lần sau.',
-  },
-  {
-    step: '3',
-    title: 'Tải lên và chuẩn hóa văn bản',
-    icon: <UploadCloud className="w-6 h-6" />,
-    color: 'text-amber-700',
-    bg: 'bg-amber-50',
-    border: 'border-amber-200',
-    items: [
-      'Kéo thả file .DOCX vào vùng tải lên hoặc nhấn để chọn file từ máy tính.',
-      'Sau khi chọn file, nhấn “Thực hiện Chuẩn hóa AI”.',
-      'Hệ thống sẽ tự động phân tích văn bản, nhận diện lỗi định dạng và căn chỉnh theo thể thức hành chính.',
-      'Sau khi xử lý xong, bạn có thể xem bản gốc, bản chuẩn hóa hoặc soi chiếu song song.',
-      'Với văn bản có bảng biểu, nơi nhận, chữ ký hoặc nội dung dài, nên kiểm tra lại bản xem trước trước khi tải file.',
-    ],
-    tip: 'Nên dùng file Word .DOCX gốc để hệ thống xử lý chính xác nhất.',
-  },
-  {
-    step: '4',
-    title: 'Tải DOCX hoặc xuất PDF',
-    icon: <FileDown className="w-6 h-6" />,
-    color: 'text-rose-700',
-    bg: 'bg-rose-50',
-    border: 'border-rose-200',
-    items: [
-      'Sau khi xử lý thành công, nhấn “Tải DOCX” để lưu bản Word đã chuẩn hóa.',
-      'Nếu cần bản in hoặc bản gửi đi cố định định dạng, nhấn “Tải PDF”.',
-      'Chức năng PDF sử dụng bộ chuyển đổi DOCX sang PDF để hạn chế lỗi mất đầu trang, chân trang.',
-      'Nếu xuất PDF bị lỗi, hãy kiểm tra kết nối tới PDF Converter API hoặc server chuyển đổi.',
-      'Nên mở file PDF sau khi tải về để rà soát lần cuối trước khi in hoặc phát hành.',
-    ],
-    tip: 'Xuất PDF bằng bộ chuyển đổi server ổn định hơn nhiều so với in trực tiếp từ trình duyệt.',
-  },
-  {
-    step: '5',
-    title: 'Lưu ý để sử dụng hiệu quả',
-    icon: <Lightbulb className="w-6 h-6" />,
-    color: 'text-indigo-700',
-    bg: 'bg-indigo-50',
-    border: 'border-indigo-200',
-    items: [
-      'Luôn chọn đúng loại văn bản trước khi chuẩn hóa.',
-      'Với file lấy từ nhiều nguồn khác nhau, nên kiểm tra kỹ bản xem trước sau khi xử lý.',
-      'Nếu thiết bị chưa được cấp quyền, hãy gửi yêu cầu đăng ký thay vì thử nhập lại nhiều lần.',
-      'Nếu không thấy nút cài ứng dụng ra Desktop, hãy dùng Chrome hoặc Edge và tải lại trang.',
-      'Khi gặp lỗi, hãy chụp màn hình lỗi và gửi cho quản trị viên hoặc tác giả để được hỗ trợ.',
-    ],
-    tip: 'Quy trình tốt nhất: Cài ứng dụng → Đăng ký bản quyền → Thiết lập thông số → Tải DOCX → Kiểm tra → Xuất DOCX/PDF.',
-  },
-];
-
-function SectionCard({ guideStep }: { guideStep: GuideStep }) {
-  return (
-    <div
-      className={`relative rounded-3xl border ${guideStep.border} ${guideStep.bg} p-6 sm:p-7 shadow-sm hover:shadow-lg transition-all duration-300`}
-    >
-      <div className="absolute left-0 top-6 bottom-6 w-1.5 rounded-r-full bg-gradient-to-b from-violet-500 to-cyan-400" />
-
-      <div className="pl-4">
-        <div className="flex items-start gap-4">
-          <div
-            className={`w-14 h-14 rounded-2xl bg-white shadow-sm flex items-center justify-center ${guideStep.color}`}
-          >
-            {guideStep.icon}
-          </div>
-
-          <div className="flex-1">
-            <div className="flex flex-wrap items-center gap-3 mb-2">
-              <div className="px-3 py-1 rounded-full bg-white border border-white/70 text-xs font-black text-slate-600 shadow-sm">
-                BƯỚC {guideStep.step}
-              </div>
-
-              <h3 className="text-xl sm:text-2xl font-black text-slate-800">
-                {guideStep.title}
-              </h3>
-            </div>
-
-            <div className="space-y-3 mt-4">
-              {guideStep.items.map((item, index) => (
-                <div key={`${guideStep.step}-${index}`} className="flex items-start gap-3">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-500 mt-0.5 shrink-0" />
-                  <p className="text-[15px] sm:text-base leading-7 text-slate-700">
-                    {item}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {guideStep.tip && (
-              <div className="mt-5 rounded-2xl bg-white/80 border border-white shadow-sm px-4 py-3 flex items-start gap-3">
-                <Sparkles className="w-5 h-5 text-violet-500 mt-0.5 shrink-0" />
-                <p className="text-sm sm:text-[15px] text-slate-700 leading-6">
-                  <span className="font-bold text-violet-700">Gợi ý thông minh:</span>{' '}
-                  {guideStep.tip}
-                </p>
-              </div>
-            )}
-          </div>
+    <div className="p-5 sm:p-6">
+      <div className="mb-4 flex items-center gap-3">
+        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${accent} text-white shadow-lg`}>
+          {icon}
         </div>
+        <h3 className="text-base font-black leading-snug text-slate-800 sm:text-lg">
+          {title}
+        </h3>
+      </div>
+
+      <div className="space-y-3 text-sm leading-6 text-slate-600">
+        {children}
       </div>
     </div>
-  );
-}
+  </section>
+);
+
+const StepBox = ({
+  number,
+  title,
+  desc,
+}: {
+  number: string;
+  title: string;
+  desc: React.ReactNode;
+}) => (
+  <div className="flex gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-black text-white">
+      {number}
+    </div>
+    <div>
+      <p className="font-extrabold text-slate-800">{title}</p>
+      <div className="mt-1 text-[13px] leading-5 text-slate-600">
+        {desc}
+      </div>
+    </div>
+  </div>
+);
+
+const CheckLine = ({ children }: { children: React.ReactNode }) => (
+  <div className="flex items-start gap-2 rounded-2xl bg-slate-50 px-4 py-3">
+    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+    <span className="text-[13px] leading-5 text-slate-600">{children}</span>
+  </div>
+);
+
+const SimplePdfStep = ({
+  icon,
+  title,
+  desc,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  desc: React.ReactNode;
+}) => (
+  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="mb-2 flex items-center gap-2">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-rose-50 text-rose-600">
+        {icon}
+      </div>
+      <p className="font-black text-slate-800">{title}</p>
+    </div>
+    <div className="text-[13px] leading-5 text-slate-600">
+      {desc}
+    </div>
+  </div>
+);
 
 export function UserGuide({ isOpen, onClose }: UserGuideProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[999] flex items-center justify-center bg-slate-950/55 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-5xl max-h-[92vh] overflow-hidden rounded-[2rem] bg-white shadow-[0_20px_80px_rgba(15,23,42,0.35)] border border-white/60">
-        <div className="relative overflow-hidden bg-gradient-to-r from-blue-700 via-indigo-700 to-violet-700 text-white px-6 sm:px-8 py-5">
-          <div className="absolute inset-0 opacity-25">
-            <div className="absolute -top-10 -left-10 w-40 h-40 rounded-full bg-white blur-3xl"></div>
-            <div className="absolute -bottom-10 right-10 w-40 h-40 rounded-full bg-cyan-300 blur-3xl"></div>
-          </div>
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/65 p-3 backdrop-blur-sm sm:p-4">
+      <div className="flex max-h-[94vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] bg-white shadow-2xl">
+        {/* HEADER */}
+        <div className="relative shrink-0 overflow-hidden bg-gradient-to-r from-indigo-700 via-violet-700 to-blue-600 px-5 py-6 text-white sm:px-8 sm:py-7">
+          <div className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
+          <div className="absolute -bottom-28 left-16 h-64 w-64 rounded-full bg-cyan-300/20 blur-2xl" />
+          <div className="absolute right-24 top-8 h-24 w-24 rounded-full bg-purple-300/20 blur-xl" />
 
-          <div className="relative flex items-start justify-between gap-4">
-            <div className="flex items-start gap-4">
-              <div className="w-14 h-14 rounded-2xl bg-white/15 border border-white/20 backdrop-blur-md flex items-center justify-center shadow-lg">
-                <BookOpen className="w-7 h-7" />
+          <div className="relative z-10 flex items-start justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/20 backdrop-blur">
+                <BookOpen className="h-7 w-7" />
               </div>
 
-              <div>
-                <h2 className="text-2xl sm:text-3xl font-black tracking-wide">
+              <div className="min-w-0">
+                <h2 className="text-2xl font-black leading-tight tracking-tight sm:text-3xl">
                   HƯỚNG DẪN SỬ DỤNG
                 </h2>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-blue-100 font-semibold tracking-wide">
-                  <span>DOCFORMAT PRO V10.0 ULTIMATE</span>
-                  <span className="opacity-70">•</span>
-                  <span>AI DOCUMENT ENGINE</span>
-                </div>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.2em] text-cyan-100">
+                  DOCFORMAT PRO V10.0 ULTIMATE
+                </p>
+                <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-indigo-50">
+                  Hướng dẫn nhanh cách cài đặt, đăng ký bản quyền, chuẩn hóa văn bản và tải PDF bằng PDF Helper.
+                </p>
               </div>
             </div>
 
             <button
               onClick={onClose}
-              className="shrink-0 w-11 h-11 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/15 flex items-center justify-center transition-all"
-              title="Đóng"
+              className="shrink-0 rounded-2xl p-3 text-white/85 transition hover:bg-white/15 hover:text-white"
+              title="Đóng hướng dẫn"
             >
-              <X className="w-6 h-6" />
+              <X className="h-6 w-6" />
             </button>
           </div>
         </div>
 
-        <div className="max-h-[calc(92vh-90px)] overflow-y-auto bg-gradient-to-b from-slate-50 to-white">
-          <div className="px-5 sm:px-8 py-7 sm:py-8">
-            <div className="text-center max-w-4xl mx-auto mb-8">
-              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-violet-50 border border-violet-100 text-violet-700 text-xs sm:text-sm font-black uppercase tracking-wider shadow-sm">
-                <Sparkles className="w-4 h-4" />
-                Trợ lý hướng dẫn thông minh
-              </div>
-
-              <h3 className="mt-5 text-2xl sm:text-3xl font-black text-slate-800 leading-tight">
-                docFormat Pro giúp bạn chuẩn hóa văn bản hành chính{' '}
-                <span className="bg-clip-text text-transparent bg-gradient-to-r from-violet-600 to-cyan-500">
-                  nhanh - đúng - chuyên nghiệp
-                </span>
-              </h3>
-
-              <p className="mt-4 text-slate-600 text-[15px] sm:text-lg leading-8">
-                Thực hiện theo các bước dưới đây để cài ứng dụng ra Desktop, đăng ký
-                bản quyền, cấu hình thông số, tải file Word và xuất DOCX/PDF ổn định.
-              </p>
+        {/* BODY */}
+        <div className="flex-1 overflow-y-auto bg-gradient-to-b from-slate-50 to-white px-4 py-6 sm:px-8">
+          <div className="mx-auto mb-6 max-w-3xl text-center">
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-indigo-100 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-indigo-700 shadow-sm">
+              <Sparkles className="h-4 w-4 text-violet-500" />
+              Chuẩn hóa văn bản nhanh, bảo mật, chuyên nghiệp
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-              <div className="rounded-2xl bg-white border border-slate-200 px-5 py-4 shadow-sm">
-                <div className="flex items-center gap-3 mb-2">
-                  <Laptop className="w-5 h-5 text-cyan-600" />
-                  <h4 className="font-black text-slate-800">Cài như ứng dụng Desktop</h4>
-                </div>
-                <p className="text-sm text-slate-600 leading-6">
-                  Mở nhanh từ Desktop, không cần nhập lại đường link mỗi lần sử dụng.
-                </p>
-              </div>
+            <p className="text-[15px] font-medium leading-7 text-slate-600">
+              DocFormat Pro giúp chuyển tài liệu Word cũ, sai định dạng hoặc chưa thống nhất
+              thành văn bản hành chính chuẩn form. Người dùng chỉ cần làm theo các bước bên dưới.
+            </p>
+          </div>
 
-              <div className="rounded-2xl bg-white border border-slate-200 px-5 py-4 shadow-sm">
-                <div className="flex items-center gap-3 mb-2">
-                  <LockKeyhole className="w-5 h-5 text-emerald-600" />
-                  <h4 className="font-black text-slate-800">Bản quyền theo đơn vị</h4>
-                </div>
-                <p className="text-sm text-slate-600 leading-6">
-                  Mỗi trường có một mã định danh duy nhất, hỗ trợ kích hoạt tối đa 15 thiết bị.
-                </p>
-              </div>
+          <div className="grid gap-5">
+            {/* 1 */}
+            <SectionCard
+              icon={<Monitor className="h-6 w-6" />}
+              title="1. Cài ứng dụng docFormat Pro ra màn hình Desktop"
+              accent="from-violet-500 to-indigo-600"
+            >
+              <StepBox
+                number="1"
+                title="Mở docFormat Pro bằng Chrome hoặc Edge"
+                desc="Mở đường link docFormat Pro do quản trị viên cung cấp."
+              />
 
-              <div className="rounded-2xl bg-white border border-slate-200 px-5 py-4 shadow-sm">
-                <div className="flex items-center gap-3 mb-2">
-                  <FileText className="w-5 h-5 text-rose-600" />
-                  <h4 className="font-black text-slate-800">Xuất DOCX và PDF</h4>
-                </div>
-                <p className="text-sm text-slate-600 leading-6">
-                  Chuẩn hóa văn bản rồi tải file Word hoặc PDF để lưu trữ, in ấn, phát hành.
-                </p>
-              </div>
-            </div>
+              <StepBox
+                number="2"
+                title="Bấm biểu tượng cài đặt ứng dụng"
+                desc={
+                  <>
+                    Trên thanh địa chỉ trình duyệt, bấm biểu tượng <b>Cài đặt ứng dụng</b>.
+                    Nếu không thấy biểu tượng, bấm menu ba chấm rồi chọn <b>Cài đặt docFormat Pro</b>.
+                  </>
+                }
+              />
 
-            <div className="space-y-6">
-              {guideSteps.map((guideStep) => (
-                <React.Fragment key={guideStep.step}>
-                  <SectionCard guideStep={guideStep} />
-                </React.Fragment>
-              ))}
-            </div>
+              <StepBox
+                number="3"
+                title="Từ lần sau mở bằng biểu tượng Desktop"
+                desc="Sau khi cài, ngoài màn hình Desktop sẽ có biểu tượng docFormat Pro. Người dùng chỉ cần bấm biểu tượng đó để mở ứng dụng."
+              />
+            </SectionCard>
 
-            <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+            {/* 2 */}
+            <SectionCard
+              icon={<ShieldCheck className="h-6 w-6" />}
+              title="2. Đăng ký và kiểm tra bản quyền thiết bị"
+              accent="from-emerald-500 to-teal-600"
+            >
+              <CheckLine>
+                Nếu thiết bị chưa được cấp phép, ứng dụng sẽ hiện cửa sổ đăng ký bản quyền.
+              </CheckLine>
+              <CheckLine>
+                Chọn đúng đơn vị trường học, nhập tên thiết bị và tên người sử dụng.
+              </CheckLine>
+              <CheckLine>
+                Sau khi gửi yêu cầu, chờ Admin duyệt. Khi được duyệt, bấm <b>Kiểm tra trạng thái cấp phép</b>.
+              </CheckLine>
+              <CheckLine>
+                Nếu thiết bị bị thu hồi hoặc trường bị khóa, ứng dụng sẽ tự khóa lại theo trạng thái bản quyền.
+              </CheckLine>
+            </SectionCard>
+
+            {/* 3 */}
+            <SectionCard
+              icon={<Settings2 className="h-6 w-6" />}
+              title="3. Tinh chỉnh thông số trước khi chuẩn hóa"
+              accent="from-blue-500 to-cyan-500"
+            >
+              <CheckLine>
+                Chọn mẫu văn bản: Nhà trường, Chi bộ Đảng, Tổ chuyên môn hoặc không chèn thêm.
+              </CheckLine>
+              <CheckLine>
+                Nếu là <b>Công văn</b>, nhập phần trích yếu để hệ thống trình bày đúng thể thức.
+              </CheckLine>
+              <CheckLine>
+                Nếu là <b>Biên bản</b>, nhập họ tên Chủ tọa và Thư ký để tạo đúng hai vùng chữ ký.
+              </CheckLine>
+              <CheckLine>
+                Nếu là <b>Quyết định</b>, chọn đúng loại văn bản nhà trường hoặc Chi bộ để hệ thống định dạng đúng mẫu.
+              </CheckLine>
+              <CheckLine>
+                Nhập chức vụ, họ tên người ký hoặc người duyệt. Ứng dụng sẽ tự ghi nhớ cho lần sau.
+              </CheckLine>
+            </SectionCard>
+
+            {/* 4 */}
+            <SectionCard
+              icon={<UploadCloud className="h-6 w-6" />}
+              title="4. Chuẩn hóa tài liệu Word"
+              accent="from-fuchsia-500 to-violet-600"
+            >
+              <StepBox
+                number="1"
+                title="Tải file Word gốc lên"
+                desc="Kéo thả hoặc chọn file Word cần chuẩn hóa. Nên dùng file .docx để có kết quả tốt nhất."
+              />
+
+              <StepBox
+                number="2"
+                title="Bấm Thực hiện chuẩn hóa AI"
+                desc="Ứng dụng sẽ xử lý bố cục, font chữ, căn lề, bảng biểu, tiêu đề, nơi nhận, chữ ký và các phần đặc biệt."
+              />
+
+              <StepBox
+                number="3"
+                title="Xem lại kết quả"
+                desc="Có thể xem Bản gốc, Soi chiếu song song và Bản chuẩn hóa trước khi tải về."
+              />
+            </SectionCard>
+
+            {/* 5 PDF HELPER SIMPLE */}
+            <SectionCard
+              icon={<FileDown className="h-6 w-6" />}
+              title="5. Muốn tải PDF thì cần bật docFormat PDF Helper"
+              accent="from-rose-500 to-orange-500"
+            >
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900">
                 <div className="flex items-start gap-3">
-                  <Info className="w-6 h-6 text-amber-600 shrink-0 mt-0.5" />
-
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
                   <div>
-                    <h4 className="font-black text-slate-800 text-lg">Lưu ý quan trọng</h4>
-
-                    <div className="mt-3 space-y-2 text-slate-700 text-sm sm:text-[15px] leading-7">
-                      <p className="flex items-start gap-2">
-                        <ChevronRight className="w-4 h-4 text-amber-600 mt-1 shrink-0" />
-                        <span>
-                          Nên xử lý trên file <strong>.DOCX</strong> gốc để AI nhận diện tốt nhất.
-                        </span>
-                      </p>
-
-                      <p className="flex items-start gap-2">
-                        <ChevronRight className="w-4 h-4 text-amber-600 mt-1 shrink-0" />
-                        <span>Trước khi phát hành văn bản, nên xem lại bản chuẩn hóa và file PDF.</span>
-                      </p>
-
-                      <p className="flex items-start gap-2">
-                        <ChevronRight className="w-4 h-4 text-amber-600 mt-1 shrink-0" />
-                        <span>Nếu có lỗi PDF, hãy kiểm tra lại server chuyển đổi PDF hoặc kết nối mạng.</span>
-                      </p>
-                    </div>
+                    <p className="font-black">Giải thích dễ hiểu</p>
+                    <p className="mt-1 text-[13px] leading-5">
+                      Nút <b>Tải DOCX</b> dùng trực tiếp trong ứng dụng. Nhưng nút <b>Tải PDF</b> cần một
+                      “bộ hỗ trợ nhỏ” chạy trên máy tính, gọi là <b>docFormat PDF Helper</b>. Bộ hỗ trợ này dùng
+                      LibreOffice để chuyển Word thành PDF ngay trên máy, không cần thuê máy chủ.
+                    </p>
                   </div>
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <SimplePdfStep
+                  icon={<Download className="h-5 w-5" />}
+                  title="Việc 1: Cài LibreOffice"
+                  desc={
+                    <>
+                      Cài LibreOffice một lần trên máy tính. Đây là phần mềm miễn phí, giúp chuyển file Word sang PDF.
+                      Sau khi cài xong, không cần mở LibreOffice.
+                    </>
+                  }
+                />
+
+                <SimplePdfStep
+                  icon={<FolderOpen className="h-5 w-5" />}
+                  title="Việc 2: Mở thư mục pdf-converter"
+                  desc={
+                    <>
+                      Trong bộ cài docFormat Pro, mở thư mục <CodeText>pdf-converter</CodeText>.
+                      Đây là thư mục chứa công cụ hỗ trợ xuất PDF.
+                    </>
+                  }
+                />
+
+                <SimplePdfStep
+                  icon={<MousePointerClick className="h-5 w-5" />}
+                  title="Việc 3: Bấm file START_PDF_HELPER.bat"
+                  desc={
+                    <>
+                      Bấm đúp file <CodeText>START_PDF_HELPER.bat</CodeText>.
+                      Nếu cửa sổ màu đen hiện dòng <b>docFormat PDF Helper đang chạy</b> là đã thành công.
+                    </>
+                  }
+                />
+
+                <SimplePdfStep
+                  icon={<Power className="h-5 w-5" />}
+                  title="Việc 4: Không đóng cửa sổ đó"
+                  desc={
+                    <>
+                      Trong lúc dùng nút <b>Tải PDF</b>, hãy để cửa sổ PDF Helper mở.
+                      Nếu đóng cửa sổ đó, chức năng tải PDF sẽ không hoạt động.
+                    </>
+                  }
+                />
+              </div>
+
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900">
                 <div className="flex items-start gap-3">
-                  <Globe className="w-6 h-6 text-sky-600 shrink-0 mt-0.5" />
-
+                  <Globe2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
                   <div>
-                    <h4 className="font-black text-slate-800 text-lg">Hỗ trợ kỹ thuật</h4>
-
-                    <div className="mt-3 space-y-2 text-slate-700 text-sm sm:text-[15px] leading-7">
-                      <p>Khi cần hỗ trợ, vui lòng chuẩn bị:</p>
-
-                      <p className="flex items-start gap-2">
-                        <ChevronRight className="w-4 h-4 text-sky-600 mt-1 shrink-0" />
-                        <span>Ảnh chụp màn hình lỗi.</span>
-                      </p>
-
-                      <p className="flex items-start gap-2">
-                        <ChevronRight className="w-4 h-4 text-sky-600 mt-1 shrink-0" />
-                        <span>Mô tả ngắn gọn thao tác đang thực hiện.</span>
-                      </p>
-
-                      <p className="flex items-start gap-2">
-                        <ChevronRight className="w-4 h-4 text-sky-600 mt-1 shrink-0" />
-                        <span>Tên đơn vị, mã định danh hoặc tên thiết bị nếu có.</span>
-                      </p>
-                    </div>
+                    <p className="font-black">Cách kiểm tra nhanh</p>
+                    <p className="mt-1 text-[13px] leading-5">
+                      Mở trình duyệt và nhập <CodeText>http://localhost:8787</CodeText>.
+                      Nếu thấy dòng <CodeText>"ok": true</CodeText> và <CodeText>"libreOfficeDetected": true</CodeText>
+                      thì máy đã sẵn sàng tải PDF.
+                    </p>
                   </div>
                 </div>
               </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="mb-2 flex items-center gap-2 font-black text-slate-800">
+                  <HelpCircle className="h-5 w-5 text-indigo-600" />
+                  Người dùng chỉ cần nhớ ngắn gọn
+                </p>
+                <p className="text-[13px] leading-6 text-slate-600">
+                  Muốn tải PDF: <b>Cài LibreOffice</b> → <b>Bấm START_PDF_HELPER.bat</b> → <b>Để cửa sổ đó mở</b> → <b>Quay lại docFormat Pro bấm Tải PDF</b>.
+                </p>
+              </div>
+            </SectionCard>
+
+            {/* 6 ERROR */}
+            <SectionCard
+              icon={<AlertTriangle className="h-6 w-6" />}
+              title="6. Nếu không tải được PDF thì làm gì?"
+              accent="from-amber-500 to-red-500"
+            >
+              <CheckLine>
+                Nếu báo <b>không kết nối được PDF Helper</b>: mở thư mục <CodeText>pdf-converter</CodeText> và chạy lại <CodeText>START_PDF_HELPER.bat</CodeText>.
+              </CheckLine>
+              <CheckLine>
+                Nếu báo <b>chưa tìm thấy LibreOffice</b>: cài LibreOffice rồi chạy lại PDF Helper.
+              </CheckLine>
+              <CheckLine>
+                Nếu trình duyệt hỏi quyền truy cập dịch vụ trên thiết bị: bấm <b>Cho phép</b>.
+              </CheckLine>
+              <CheckLine>
+                Nếu chỉ cần file Word đã chuẩn hóa, bấm <b>Tải DOCX</b>; chức năng này không cần PDF Helper.
+              </CheckLine>
+            </SectionCard>
+
+            {/* 7 DOWNLOAD */}
+            <SectionCard
+              icon={<Download className="h-6 w-6" />}
+              title="7. Tải kết quả và xử lý file mới"
+              accent="from-slate-700 to-slate-900"
+            >
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                  <FileText className="mb-2 h-5 w-5 text-emerald-600" />
+                  <p className="font-black text-emerald-800">Tải DOCX</p>
+                  <p className="mt-1 text-xs text-emerald-700">
+                    Tải file Word đã chuẩn hóa.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
+                  <FileDown className="mb-2 h-5 w-5 text-rose-600" />
+                  <p className="font-black text-rose-800">Tải PDF</p>
+                  <p className="mt-1 text-xs text-rose-700">
+                    Cần PDF Helper đang chạy.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
+                  <RefreshCw className="mb-2 h-5 w-5 text-indigo-600" />
+                  <p className="font-black text-indigo-800">Xử lý file khác</p>
+                  <p className="mt-1 text-xs text-indigo-700">
+                    Quay lại để tải tài liệu mới.
+                  </p>
+                </div>
+              </div>
+            </SectionCard>
+          </div>
+        </div>
+
+        {/* FOOTER */}
+        <div className="shrink-0 border-t border-slate-200 bg-white px-5 py-4 sm:px-8">
+          <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
+              <PlayCircle className="h-4 w-4 text-indigo-500" />
+              <span>
+                Cần hỗ trợ kỹ thuật? Vui lòng liên hệ tác giả:{' '}
+                <b className="text-indigo-700">Lại Cao Đằng</b>
+              </span>
             </div>
 
-            <div className="mt-8 text-center">
-              <p className="text-sm sm:text-[15px] text-slate-600">
-                Cần hỗ trợ thêm về kỹ thuật? Vui lòng liên hệ tác giả:{' '}
-                <span className="font-bold text-indigo-700">Lại Cao Đằng</span>
-              </p>
-
-              <button
-                onClick={onClose}
-                className="mt-5 inline-flex items-center justify-center px-8 py-4 rounded-2xl bg-gradient-to-r from-slate-800 to-slate-900 text-white font-black text-base shadow-xl shadow-slate-900/20 hover:-translate-y-0.5 hover:shadow-2xl transition-all"
-              >
-                Đã hiểu & Đóng lại
-              </button>
-            </div>
+            <button
+              onClick={onClose}
+              className="rounded-2xl bg-slate-900 px-6 py-3 text-sm font-black text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-slate-800"
+            >
+              Đã hiểu & Đóng lại
+            </button>
           </div>
         </div>
       </div>

@@ -261,32 +261,60 @@ export default function MainApp() {
 
     setIsExportingPDF(true);
 
+    const showEnvironmentGuide = (detail: string) => {
+      alert(
+        `Không thể xuất PDF bằng bộ chuyển đổi local.\n\n` +
+        `Nguyên nhân:\n${detail}\n\n` +
+        `Máy tính cần chuẩn bị đủ môi trường sau:\n\n` +
+        `1. Cài LibreOffice.\n` +
+        `2. Mở thư mục pdf-converter.\n` +
+        `3. Chạy file START_PDF_HELPER.bat.\n` +
+        `4. Giữ cửa sổ PDF Helper đang mở trong lúc dùng nút Tải PDF.\n` +
+        `5. Mở http://localhost:8787 để kiểm tra có "ok": true và "libreOfficeDetected": true.\n` +
+        `6. Quay lại docFormat Pro và bấm Tải PDF lại.\n\n` +
+        `Nếu trình duyệt hỏi quyền truy cập dịch vụ trên thiết bị này, hãy bấm "Cho phép".`
+      );
+    };
+
     try {
       let healthData: any = null;
 
       try {
         const healthResponse = await fetch(PDF_HEALTH_URL, {
           method: 'GET',
+          cache: 'no-store',
         });
 
-        if (healthResponse.ok) {
-          healthData = await healthResponse.json();
+        if (!healthResponse.ok) {
+          showEnvironmentGuide(
+            `docFormat PDF Helper có phản hồi nhưng chưa sẵn sàng. Mã lỗi: ${healthResponse.status}.`
+          );
+          return;
         }
+
+        healthData = await healthResponse.json();
       } catch (healthError) {
-        throw new Error(
-          `Không kết nối được docFormat PDF Helper tại ${PDF_HELPER_BASE_URL}.\n\n` +
-          `Vui lòng kiểm tra:\n` +
-          `1. Đã chạy START_PDF_HELPER.bat chưa?\n` +
-          `2. Trình duyệt có hỏi quyền truy cập thiết bị thì bấm "Cho phép".\n` +
-          `3. Mở thử địa chỉ http://localhost:8787 xem có hiện "ok": true không.`
+        showEnvironmentGuide(
+          `Không kết nối được docFormat PDF Helper tại http://localhost:8787.\n` +
+          `Có thể máy chưa chạy START_PDF_HELPER.bat, hoặc trình duyệt chưa được cấp quyền truy cập localhost.`
         );
+        return;
       }
 
-      if (healthData && healthData.libreOfficeDetected === false) {
-        throw new Error(
-          `docFormat PDF Helper đã chạy nhưng chưa tìm thấy LibreOffice.\n\n` +
-          `Vui lòng cài LibreOffice rồi chạy lại START_PDF_HELPER.bat.`
+      if (!healthData?.ok) {
+        showEnvironmentGuide(
+          `docFormat PDF Helper đang phản hồi không đúng định dạng.\n` +
+          `Vui lòng tắt cửa sổ PDF Helper rồi chạy lại START_PDF_HELPER.bat.`
         );
+        return;
+      }
+
+      if (healthData.libreOfficeDetected === false) {
+        showEnvironmentGuide(
+          `docFormat PDF Helper đã chạy nhưng chưa tìm thấy LibreOffice.\n` +
+          `Vui lòng cài LibreOffice, sau đó chạy lại START_PDF_HELPER.bat.`
+        );
+        return;
       }
 
       const formData = new FormData();
@@ -303,14 +331,37 @@ export default function MainApp() {
       });
 
       if (!response.ok) {
-        const message = await response.text();
-        throw new Error(message || 'PDF Helper trả về lỗi khi chuyển đổi PDF.');
+        const rawMessage = await response.text();
+
+        let friendlyMessage = rawMessage || 'PDF Helper trả về lỗi khi chuyển đổi PDF.';
+
+        if (rawMessage.includes('Cannot POST')) {
+          friendlyMessage =
+            `PDF Helper đang chạy phiên bản cũ hoặc sai endpoint.\n` +
+            `Vui lòng tắt cửa sổ PDF Helper, kiểm tra file pdf-converter/server.js, rồi chạy lại START_PDF_HELPER.bat.`;
+        } else if (rawMessage.toLowerCase().includes('libreoffice')) {
+          friendlyMessage =
+            `LibreOffice chưa hoạt động đúng hoặc chưa được tìm thấy.\n` +
+            `Vui lòng cài LibreOffice và chạy lại START_PDF_HELPER.bat.`;
+        } else if (rawMessage.trim().startsWith('<!DOCTYPE html') || rawMessage.includes('<html')) {
+          friendlyMessage =
+            `Ứng dụng nhận được phản hồi HTML thay vì file PDF.\n` +
+            `Có thể request đang bị gửi sai nơi hoặc PDF Helper chưa chạy đúng.\n` +
+            `Vui lòng mở http://localhost:8787 để kiểm tra trạng thái.`;
+        }
+
+        showEnvironmentGuide(friendlyMessage);
+        return;
       }
 
       const pdfBlob = await response.blob();
 
       if (!pdfBlob || pdfBlob.size === 0) {
-        throw new Error('PDF Helper trả về file PDF rỗng.');
+        showEnvironmentGuide(
+          `PDF Helper đã phản hồi nhưng file PDF trả về bị rỗng.\n` +
+          `Vui lòng thử lại hoặc kiểm tra LibreOffice.`
+        );
+        return;
       }
 
       const pdfUrl = URL.createObjectURL(pdfBlob);
@@ -331,16 +382,10 @@ export default function MainApp() {
 
       const message = error instanceof Error ? error.message : String(error);
 
-      alert(
-        `Không thể xuất PDF bằng bộ chuyển đổi local.\n\n` +
-        `Chi tiết lỗi:\n${message}\n\n` +
-        `Hướng dẫn nhanh:\n` +
-        `1. Cài LibreOffice.\n` +
-        `2. Mở thư mục pdf-converter.\n` +
-        `3. Chạy START_PDF_HELPER.bat.\n` +
-        `4. Giữ cửa sổ PDF Helper đang mở.\n` +
-        `5. Mở http://localhost:8787 để kiểm tra có "ok": true.\n` +
-        `6. Quay lại docFormat Pro và bấm Tải PDF.`
+      showEnvironmentGuide(
+        message.includes('Failed to fetch')
+          ? `Không thể kết nối tới docFormat PDF Helper.\nVui lòng kiểm tra START_PDF_HELPER.bat đã chạy chưa.`
+          : message
       );
     } finally {
       setIsExportingPDF(false);

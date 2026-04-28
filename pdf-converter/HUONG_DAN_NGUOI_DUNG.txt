@@ -1,0 +1,56 @@
+HƯỚNG DẪN CÀI ĐẶT docFormat PDF Helper
+
+Mục đích:
+docFormat PDF Helper giúp docFormat Pro tải file PDF trên máy tính cá nhân.
+
+Người dùng không cần mở VS Code.
+Người dùng không cần gõ lệnh.
+Người dùng không cần biết kỹ thuật.
+
+CÀI ĐẶT LẦN ĐẦU:
+
+Bước 1:
+Cài LibreOffice nếu máy chưa có.
+Nếu chưa biết tải ở đâu, chạy file CAI_DAT_PDF_HELPER.bat, hệ thống sẽ tự mở trang tải LibreOffice.
+
+Bước 2:
+Mở thư mục pdf-converter.
+
+Bước 3:
+Bấm đúp file:
+CAI_DAT_PDF_HELPER.bat
+
+Bước 4:
+Chờ hệ thống tự cài.
+Nếu thành công, ngoài Desktop sẽ có 2 biểu tượng:
+- docFormat PDF Helper
+- Kiem tra PDF Helper
+
+CÁCH DÙNG HẰNG NGÀY:
+
+Bước 1:
+Bấm đúp biểu tượng:
+docFormat PDF Helper
+
+Bước 2:
+Giữ cửa sổ PDF Helper đang mở.
+
+Bước 3:
+Mở docFormat Pro.
+
+Bước 4:
+Bấm Tải PDF.
+
+LƯU Ý:
+
+- Nếu chỉ tải file Word, bấm Tải DOCX, không cần PDF Helper.
+- Nếu muốn tải PDF, PDF Helper phải đang mở.
+- Nếu tắt cửa sổ PDF Helper, nút Tải PDF sẽ không hoạt động.
+- Nếu trình duyệt hỏi quyền truy cập dịch vụ trên thiết bị này, hãy bấm Cho phép.
+
+KIỂM TRA NHANH:
+
+Nếu không tải được PDF:
+1. Bấm biểu tượng Kiem tra PDF Helper ngoài Desktop.
+2. Nếu báo PDF Helper chưa chạy, hãy bấm docFormat PDF Helper.
+3. Nếu báo chưa có LibreOffice, hãy cài LibreOffice rồi thử lại.
