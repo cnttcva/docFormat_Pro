@@ -32,9 +32,24 @@ import {
   FileDown,
 } from 'lucide-react';
 
-const PDF_CONVERTER_URL =
-  ((import.meta as any).env?.VITE_PDF_CONVERTER_URL as string | undefined) ||
-  'http://localhost:8787/api/convert-docx-to-pdf';
+/**
+ * PDF Helper local
+ *
+ * Giai đoạn 1: không thuê server PDF riêng.
+ * Mỗi máy người dùng chạy PDF Helper tại:
+ * http://localhost:8787
+ *
+ * Cố định đường dẫn để tránh bị .env.local hoặc biến môi trường Vercel
+ * trỏ nhầm về localhost:3000.
+ *
+ * Endpoint server.js đang hỗ trợ:
+ * GET  /health
+ * POST /convert-to-pdf
+ */
+const PDF_HELPER_BASE_URL = 'http://localhost:8787';
+
+const PDF_CONVERTER_URL = 'http://localhost:8787/convert-to-pdf';
+const PDF_HEALTH_URL = 'http://localhost:8787/health';
 
 const HeroSection = () => (
   <div className="text-center mb-10 space-y-4">
@@ -112,6 +127,7 @@ export default function MainApp() {
     isCongVan: false,
     congVanSummary: '',
     isMinutes: false,
+    isDecision: false,
     signerTitle: savedSigs.signerTitle || '',
     signerName: savedSigs.signerName || '',
     presiderName: savedSigs.presiderName || '',
@@ -246,6 +262,33 @@ export default function MainApp() {
     setIsExportingPDF(true);
 
     try {
+      let healthData: any = null;
+
+      try {
+        const healthResponse = await fetch(PDF_HEALTH_URL, {
+          method: 'GET',
+        });
+
+        if (healthResponse.ok) {
+          healthData = await healthResponse.json();
+        }
+      } catch (healthError) {
+        throw new Error(
+          `Không kết nối được docFormat PDF Helper tại ${PDF_HELPER_BASE_URL}.\n\n` +
+          `Vui lòng kiểm tra:\n` +
+          `1. Đã chạy START_PDF_HELPER.bat chưa?\n` +
+          `2. Trình duyệt có hỏi quyền truy cập thiết bị thì bấm "Cho phép".\n` +
+          `3. Mở thử địa chỉ http://localhost:8787 xem có hiện "ok": true không.`
+        );
+      }
+
+      if (healthData && healthData.libreOfficeDetected === false) {
+        throw new Error(
+          `docFormat PDF Helper đã chạy nhưng chưa tìm thấy LibreOffice.\n\n` +
+          `Vui lòng cài LibreOffice rồi chạy lại START_PDF_HELPER.bat.`
+        );
+      }
+
       const formData = new FormData();
 
       const docxName = result.fileName?.toLowerCase().endsWith('.docx')
@@ -261,13 +304,13 @@ export default function MainApp() {
 
       if (!response.ok) {
         const message = await response.text();
-        throw new Error(message || 'PDF converter trả về lỗi.');
+        throw new Error(message || 'PDF Helper trả về lỗi khi chuyển đổi PDF.');
       }
 
       const pdfBlob = await response.blob();
 
       if (!pdfBlob || pdfBlob.size === 0) {
-        throw new Error('PDF converter trả về file rỗng.');
+        throw new Error('PDF Helper trả về file PDF rỗng.');
       }
 
       const pdfUrl = URL.createObjectURL(pdfBlob);
@@ -291,10 +334,13 @@ export default function MainApp() {
       alert(
         `Không thể xuất PDF bằng bộ chuyển đổi local.\n\n` +
         `Chi tiết lỗi:\n${message}\n\n` +
-        `Hãy kiểm tra:\n` +
-        `1. Đã chạy npm run dev chưa?\n` +
-        `2. Server PDF có chạy ở http://localhost:8787 không?\n` +
-        `3. Máy đã cài LibreOffice chưa?`
+        `Hướng dẫn nhanh:\n` +
+        `1. Cài LibreOffice.\n` +
+        `2. Mở thư mục pdf-converter.\n` +
+        `3. Chạy START_PDF_HELPER.bat.\n` +
+        `4. Giữ cửa sổ PDF Helper đang mở.\n` +
+        `5. Mở http://localhost:8787 để kiểm tra có "ok": true.\n` +
+        `6. Quay lại docFormat Pro và bấm Tải PDF.`
       );
     } finally {
       setIsExportingPDF(false);
