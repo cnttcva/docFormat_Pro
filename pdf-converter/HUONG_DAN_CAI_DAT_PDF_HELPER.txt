@@ -1,0 +1,25 @@
+HƯỚNG DẪN CÀI ĐẶT docFormat PDF Helper
+
+Chức năng:
+- Giúp docFormat Pro xuất file PDF trên máy tính cá nhân.
+- Không gửi tài liệu lên server PDF bên ngoài.
+- Không tốn chi phí thuê máy chủ.
+
+Yêu cầu:
+1. Cài LibreOffice.
+2. Cài Node.js LTS.
+3. Chạy file START_PDF_HELPER.bat trước khi bấm Tải PDF.
+
+Cách sử dụng:
+1. Mở thư mục pdf-converter.
+2. Bấm đúp file CHECK_LIBREOFFICE.bat để kiểm tra LibreOffice.
+3. Bấm đúp file START_PDF_HELPER.bat.
+4. Giữ cửa sổ PDF Helper đang mở.
+5. Mở docFormat Pro trên trình duyệt.
+6. Bấm Tải PDF.
+7. Nếu trình duyệt hỏi quyền truy cập ứng dụng/dịch vụ trên thiết bị này, bấm Cho phép.
+
+Lưu ý:
+- Nếu tắt cửa sổ PDF Helper thì chức năng Tải PDF sẽ không hoạt động.
+- Nếu máy chưa cài LibreOffice, PDF Helper không thể chuyển DOCX sang PDF.
+- Nếu đổi máy tính khác, cần cài lại LibreOffice và chạy lại PDF Helper trên máy đó.
