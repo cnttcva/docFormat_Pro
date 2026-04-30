@@ -1,9 +1,12 @@
 // File: src/App.tsx
+// CẬP NHẬT GIAI ĐOẠN PDF-2: Thêm route /download-helper
+
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import MainApp from './MainApp';
 import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminLogin from './pages/admin/AdminLogin';
+import DownloadHelperPage from './pages/DownloadHelperPage';
 import { NotificationBanner } from './components/NotificationBanner';
 
 /**
@@ -45,7 +48,10 @@ export default function App() {
           } 
         />
 
-        {/* 4. Lệnh thu quân: Bất kỳ đường dẫn lạ nào cũng bị dẫn giải về trang chủ */}
+        {/* 4. MỚI: Trang hướng dẫn tải PDF Helper - không cần xác thực */}
+        <Route path="/download-helper" element={<DownloadHelperPage />} />
+
+        {/* 5. Lệnh thu quân: Bất kỳ đường dẫn lạ nào cũng bị dẫn giải về trang chủ */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>
