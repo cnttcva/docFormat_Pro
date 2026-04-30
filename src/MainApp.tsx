@@ -1,4 +1,9 @@
 // File: src/MainApp.tsx
+// CẬP NHẬT GIAI ĐOẠN PDF-2: 
+// - Thay alert() lỗi PDF bằng PDFHelperErrorModal đẹp
+// - Thêm HelperStatusBadge ở góc trên phải để user biết trạng thái Helper
+// - Phân loại lỗi thông minh để hiển thị đúng modal
+
 import React, { useState, useEffect } from 'react';
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from './services/firebaseConfig';
@@ -14,6 +19,10 @@ import { Header } from './components/Header';
 import { useLicenseAuth } from './components/hooks/useLicenseAuth';
 import { useStaffSearch } from './components/hooks/useStaffSearch';
 import { ProcessingStatus, ProcessResult, HeaderType } from './types';
+
+// MỚI: Import 2 component mới của PDF-2
+import { HelperStatusBadge } from './components/HelperStatusBadge';
+import { PDFHelperErrorModal, PDFErrorType } from './components/PDFHelperErrorModal';
 
 import {
   FileText,
@@ -34,20 +43,11 @@ import {
 
 /**
  * PDF Helper local
- *
- * Giai đoạn 1: không thuê server PDF riêng.
- * Mỗi máy người dùng chạy PDF Helper tại:
- * http://localhost:8787
- *
- * Cố định đường dẫn để tránh bị .env.local hoặc biến môi trường Vercel
- * trỏ nhầm về localhost:3000.
- *
- * Endpoint server.js đang hỗ trợ:
+ * Endpoint server.cjs đang hỗ trợ:
  * GET  /health
  * POST /convert-to-pdf
  */
 const PDF_HELPER_BASE_URL = 'http://localhost:8787';
-
 const PDF_CONVERTER_URL = 'http://localhost:8787/convert-to-pdf';
 const PDF_HEALTH_URL = 'http://localhost:8787/health';
 
@@ -92,6 +92,17 @@ export default function MainApp() {
   const [keepOriginalReceivers, setKeepOriginalReceivers] = useState(true);
   const [dictionaryData, setDictionaryData] = useState<any[]>([]);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
+
+  // MỚI: State cho PDFHelperErrorModal
+  const [pdfErrorModal, setPdfErrorModal] = useState<{
+    isOpen: boolean;
+    errorType: PDFErrorType;
+    errorDetail: string;
+  }>({
+    isOpen: false,
+    errorType: 'unknown',
+    errorDetail: '',
+  });
 
   const {
     orgInfo,
@@ -251,9 +262,27 @@ export default function MainApp() {
     }
   };
 
+  // ============================================================
+  // MỚI: Hàm hiện modal lỗi PDF (thay cho alert)
+  // ============================================================
+  const showPDFErrorModal = (errorType: PDFErrorType, errorDetail: string = '') => {
+    setPdfErrorModal({
+      isOpen: true,
+      errorType,
+      errorDetail,
+    });
+  };
+
+  const closePDFErrorModal = () => {
+    setPdfErrorModal({ ...pdfErrorModal, isOpen: false });
+  };
+
+  // ============================================================
+  // CẬP NHẬT: handleDownloadPDF với modal đẹp thay alert()
+  // ============================================================
   const handleDownloadPDF = async () => {
     if (!result?.blob) {
-      alert('Chưa có tài liệu đã chuẩn hóa để xuất PDF.');
+      showPDFErrorModal('unknown', 'Chưa có tài liệu đã chuẩn hóa để xuất PDF.');
       return;
     }
 
@@ -261,64 +290,71 @@ export default function MainApp() {
 
     setIsExportingPDF(true);
 
-    const showEnvironmentGuide = (detail: string) => {
-      alert(
-        `Không thể xuất PDF bằng bộ chuyển đổi local.\n\n` +
-        `Nguyên nhân:\n${detail}\n\n` +
-        `Máy tính cần chuẩn bị đủ môi trường sau:\n\n` +
-        `1. Cài LibreOffice.\n` +
-        `2. Mở thư mục pdf-converter.\n` +
-        `3. Chạy file START_PDF_HELPER.bat.\n` +
-        `4. Giữ cửa sổ PDF Helper đang mở trong lúc dùng nút Tải PDF.\n` +
-        `5. Mở http://localhost:8787 để kiểm tra có "ok": true và "libreOfficeDetected": true.\n` +
-        `6. Quay lại docFormat Pro và bấm Tải PDF lại.\n\n` +
-        `Nếu trình duyệt hỏi quyền truy cập dịch vụ trên thiết bị này, hãy bấm "Cho phép".`
-      );
-    };
-
     try {
       let healthData: any = null;
 
+      // Bước 1: Kiểm tra Helper có chạy không
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
         const healthResponse = await fetch(PDF_HEALTH_URL, {
           method: 'GET',
           cache: 'no-store',
+          signal: controller.signal,
         });
 
+        clearTimeout(timeoutId);
+
         if (!healthResponse.ok) {
-          showEnvironmentGuide(
-            `docFormat PDF Helper có phản hồi nhưng chưa sẵn sàng. Mã lỗi: ${healthResponse.status}.`
+          showPDFErrorModal(
+            'helper_not_running',
+            `Helper phản hồi với mã lỗi ${healthResponse.status}.`
           );
           return;
         }
 
         healthData = await healthResponse.json();
-      } catch (healthError) {
-        showEnvironmentGuide(
-          `Không kết nối được docFormat PDF Helper tại http://localhost:8787.\n` +
-          `Có thể máy chưa chạy START_PDF_HELPER.bat, hoặc trình duyệt chưa được cấp quyền truy cập localhost.`
-        );
+      } catch (healthError: any) {
+        // Phân biệt: Mixed Content vs Helper không chạy
+        const errorMsg = String(healthError?.message || healthError);
+        
+        if (errorMsg.includes('Mixed Content') || errorMsg.includes('mixed content')) {
+          showPDFErrorModal('mixed_content_blocked', errorMsg);
+        } else if (errorMsg.includes('aborted') || errorMsg.includes('timeout')) {
+          showPDFErrorModal(
+            'helper_not_running',
+            'Helper không phản hồi trong 5 giây.'
+          );
+        } else {
+          showPDFErrorModal(
+            'helper_not_running',
+            `Không kết nối được tại ${PDF_HEALTH_URL}.`
+          );
+        }
         return;
       }
 
+      // Bước 2: Kiểm tra LibreOffice có cài chưa
       if (!healthData?.ok) {
-        showEnvironmentGuide(
-          `docFormat PDF Helper đang phản hồi không đúng định dạng.\n` +
-          `Vui lòng tắt cửa sổ PDF Helper rồi chạy lại START_PDF_HELPER.bat.`
+        showPDFErrorModal(
+          'helper_not_running',
+          'Helper phản hồi không đúng định dạng.'
         );
         return;
       }
 
-      if (healthData.libreOfficeDetected === false) {
-        showEnvironmentGuide(
-          `docFormat PDF Helper đã chạy nhưng chưa tìm thấy LibreOffice.\n` +
-          `Vui lòng cài LibreOffice, sau đó chạy lại START_PDF_HELPER.bat.`
+      const hasLibreOffice = healthData.libreOfficeDetected || healthData.libreOfficeFound;
+      if (hasLibreOffice === false) {
+        showPDFErrorModal(
+          'libreoffice_missing',
+          'Helper đang chạy nhưng chưa tìm thấy LibreOffice trên máy.'
         );
         return;
       }
 
+      // Bước 3: Convert PDF
       const formData = new FormData();
-
       const docxName = result.fileName?.toLowerCase().endsWith('.docx')
         ? result.fileName
         : 'formatted_document.docx';
@@ -332,61 +368,39 @@ export default function MainApp() {
 
       if (!response.ok) {
         const rawMessage = await response.text();
+        let errorDetail = rawMessage || 'Helper trả về lỗi khi chuyển đổi.';
 
-        let friendlyMessage = rawMessage || 'PDF Helper trả về lỗi khi chuyển đổi PDF.';
-
-        if (rawMessage.includes('Cannot POST')) {
-          friendlyMessage =
-            `PDF Helper đang chạy phiên bản cũ hoặc sai endpoint.\n` +
-            `Vui lòng tắt cửa sổ PDF Helper, kiểm tra file pdf-converter/server.js, rồi chạy lại START_PDF_HELPER.bat.`;
-        } else if (rawMessage.toLowerCase().includes('libreoffice')) {
-          friendlyMessage =
-            `LibreOffice chưa hoạt động đúng hoặc chưa được tìm thấy.\n` +
-            `Vui lòng cài LibreOffice và chạy lại START_PDF_HELPER.bat.`;
-        } else if (rawMessage.trim().startsWith('<!DOCTYPE html') || rawMessage.includes('<html')) {
-          friendlyMessage =
-            `Ứng dụng nhận được phản hồi HTML thay vì file PDF.\n` +
-            `Có thể request đang bị gửi sai nơi hoặc PDF Helper chưa chạy đúng.\n` +
-            `Vui lòng mở http://localhost:8787 để kiểm tra trạng thái.`;
+        // Rút gọn nếu HTML
+        if (rawMessage.trim().startsWith('<!DOCTYPE') || rawMessage.includes('<html')) {
+          errorDetail = 'Helper trả về phản hồi HTML thay vì PDF. Có thể endpoint sai.';
         }
 
-        showEnvironmentGuide(friendlyMessage);
+        showPDFErrorModal('conversion_failed', errorDetail);
         return;
       }
 
       const pdfBlob = await response.blob();
 
       if (!pdfBlob || pdfBlob.size === 0) {
-        showEnvironmentGuide(
-          `PDF Helper đã phản hồi nhưng file PDF trả về bị rỗng.\n` +
-          `Vui lòng thử lại hoặc kiểm tra LibreOffice.`
-        );
+        showPDFErrorModal('conversion_failed', 'File PDF trả về bị rỗng.');
         return;
       }
 
+      // Bước 4: Tải file về máy
       const pdfUrl = URL.createObjectURL(pdfBlob);
       const a = document.createElement('a');
-
       const pdfName = docxName.replace(/\.docx$/i, '.pdf');
 
       a.href = pdfUrl;
       a.download = pdfName;
-
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-
       URL.revokeObjectURL(pdfUrl);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Lỗi xuất PDF:', error);
-
       const message = error instanceof Error ? error.message : String(error);
-
-      showEnvironmentGuide(
-        message.includes('Failed to fetch')
-          ? `Không thể kết nối tới docFormat PDF Helper.\nVui lòng kiểm tra START_PDF_HELPER.bat đã chạy chưa.`
-          : message
-      );
+      showPDFErrorModal('unknown', message);
     } finally {
       setIsExportingPDF(false);
     }
@@ -409,6 +423,11 @@ export default function MainApp() {
     setConfirmRemove(false);
   };
 
+  // MỚI: Khi click badge OFF → chuyển sang trang download
+  const handleBadgeClickWhenOffline = () => {
+    showPDFErrorModal('helper_not_running', '');
+  };
+
   return (
     <div className="min-h-screen bg-[#f4f7fb] text-slate-800 font-sans flex flex-col relative overflow-hidden selection:bg-violet-200 selection:text-violet-900">
       <div className="absolute top-[-10%] left-[-10%] w-[600px] h-[600px] bg-violet-200/40 rounded-full blur-[100px] pointer-events-none z-0"></div>
@@ -423,6 +442,11 @@ export default function MainApp() {
       />
 
       <main className="relative z-10 max-w-5xl mx-auto px-4 sm:px-6 py-12 flex-grow w-full">
+        {/* MỚI: Helper Status Badge ở góc trên phải */}
+        <div className="flex justify-end mb-4">
+          <HelperStatusBadge onClickWhenOffline={handleBadgeClickWhenOffline} />
+        </div>
+
         <HeroSection />
 
         {authStatus !== 'REGISTERED' && (
@@ -685,6 +709,15 @@ export default function MainApp() {
       />
 
       <UserGuide isOpen={showGuide} onClose={() => setShowGuide(false)} />
+
+      {/* MỚI: PDF Error Modal */}
+      <PDFHelperErrorModal
+        isOpen={pdfErrorModal.isOpen}
+        errorType={pdfErrorModal.errorType}
+        errorDetail={pdfErrorModal.errorDetail}
+        onClose={closePDFErrorModal}
+        onRetry={handleDownloadPDF}
+      />
     </div>
   );
 }
