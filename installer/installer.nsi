@@ -1,19 +1,21 @@
 ; ============================================================
 ; docFormat PDF Helper - Installer Script
-; Phiên bản: 1.0.0
-; Tác giả: Lại Cao Đằng
+; Phien ban: 1.0.0
+; Tac gia: Lai Cao Dang
+; 
+; CAP NHAT 30/04/2026: Tam bo yeu cau icon.ico va welcome.bmp
 ; ============================================================
 
-; --- Thông tin cơ bản ---
+; --- Thong tin co ban ---
 !define APP_NAME "docFormat PDF Helper"
 !define APP_VERSION "1.0.0"
-!define APP_PUBLISHER "Lại Cao Đằng"
+!define APP_PUBLISHER "Lai Cao Dang"
 !define APP_URL "https://doc-format-pro-six.vercel.app"
 !define APP_EXE_NAME "docFormatPDF_Setup.exe"
 !define INSTALL_DIR "$PROGRAMFILES64\docFormatPDF"
 !define SERVICE_NAME "docFormatPDFHelper"
 
-; --- Cấu hình installer ---
+; --- Cau hinh installer ---
 Name "${APP_NAME}"
 OutFile "build\${APP_EXE_NAME}"
 InstallDir "${INSTALL_DIR}"
@@ -27,62 +29,51 @@ SetCompressor /SOLID lzma
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 
-; --- Giao diện installer ---
+; --- Giao dien installer (dung icon mac dinh cua NSIS) ---
 !define MUI_ABORTWARNING
-!define MUI_ICON "icon.ico"
-!define MUI_UNICON "icon.ico"
-!define MUI_HEADERIMAGE
-!define MUI_WELCOMEFINISHPAGE_BITMAP "welcome.bmp"
 
-; --- Pages của installer ---
+; --- Pages cua installer ---
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_RUN_TEXT "Khởi động PDF Helper ngay"
+!define MUI_FINISHPAGE_RUN_TEXT "Khoi dong PDF Helper ngay"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\start-service.bat"
-!define MUI_FINISHPAGE_LINK "Mở docFormat Pro trên trình duyệt"
+!define MUI_FINISHPAGE_LINK "Mo docFormat Pro tren trinh duyet"
 !define MUI_FINISHPAGE_LINK_LOCATION "${APP_URL}"
 !insertmacro MUI_PAGE_FINISH
 
-; --- Pages của uninstaller ---
+; --- Pages cua uninstaller ---
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 
-; --- Ngôn ngữ ---
-!insertmacro MUI_LANGUAGE "Vietnamese"
+; --- Ngon ngu ---
 !insertmacro MUI_LANGUAGE "English"
 
 ; ============================================================
-; SECTION CHÍNH: CÀI ĐẶT
+; SECTION CHINH: CAI DAT
 ; ============================================================
-Section "Cài đặt docFormat PDF Helper" SecMain
-  SectionIn RO ; Bắt buộc cài (không cho bỏ chọn)
+Section "Cai dat docFormat PDF Helper" SecMain
+  SectionIn RO
   
   SetOutPath "$INSTDIR"
   
-  ; --- Hiển thị thông báo bắt đầu ---
   DetailPrint "==================================================="
-  DetailPrint "  docFormat PDF Helper - Đang cài đặt..."
+  DetailPrint "  docFormat PDF Helper - Dang cai dat..."
   DetailPrint "==================================================="
   
-  ; --- Copy các file cần thiết ---
-  DetailPrint "Đang sao chép file cài đặt..."
+  DetailPrint "Dang sao chep file cai dat..."
   File "..\server.cjs"
   File "..\package.json"
   File "service-wrapper.bat"
   File "install-helper.ps1"
   
-  ; --- Copy NSSM (Windows Service Manager) ---
-  ; NSSM sẽ được copy từ thư mục bin\
-  DetailPrint "Đang cài đặt Service Manager..."
+  DetailPrint "Dang cai dat Service Manager..."
   SetOutPath "$INSTDIR\bin"
   File "bin\nssm.exe"
   SetOutPath "$INSTDIR"
   
-  ; --- Tạo các batch file tiện ích ---
-  DetailPrint "Đang tạo các shortcut..."
+  DetailPrint "Dang tao cac shortcut..."
   
-  ; start-service.bat
   FileOpen $0 "$INSTDIR\start-service.bat" w
   FileWrite $0 '@echo off$\r$\n'
   FileWrite $0 'echo Khoi dong docFormat PDF Helper Service...$\r$\n'
@@ -96,7 +87,6 @@ Section "Cài đặt docFormat PDF Helper" SecMain
   FileWrite $0 'timeout /t 3 >nul$\r$\n'
   FileClose $0
   
-  ; stop-service.bat
   FileOpen $0 "$INSTDIR\stop-service.bat" w
   FileWrite $0 '@echo off$\r$\n'
   FileWrite $0 'echo Dung docFormat PDF Helper Service...$\r$\n'
@@ -104,30 +94,23 @@ Section "Cài đặt docFormat PDF Helper" SecMain
   FileWrite $0 'pause$\r$\n'
   FileClose $0
   
-  ; --- Chạy PowerShell script để cài Node.js + LibreOffice + npm install ---
   DetailPrint "==================================================="
-  DetailPrint "  Đang kiểm tra môi trường..."
-  DetailPrint "  (Có thể tải Node.js + LibreOffice nếu chưa có)"
+  DetailPrint "  Dang kiem tra moi truong..."
   DetailPrint "==================================================="
   
-  ; Chạy PowerShell với ExecutionPolicy Bypass
   nsExec::ExecToLog 'powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$INSTDIR\install-helper.ps1" -InstallDir "$INSTDIR"'
   Pop $0
   ${If} $0 != 0
-    DetailPrint "CẢNH BÁO: PowerShell script trả về mã $0"
-    DetailPrint "Một số bước có thể chưa hoàn thành. Helper vẫn được cài đặt."
+    DetailPrint "CANH BAO: PowerShell script tra ve ma $0"
   ${EndIf}
   
-  ; --- Đăng ký Windows Service ---
   DetailPrint "==================================================="
-  DetailPrint "  Đang đăng ký Windows Service..."
+  DetailPrint "  Dang dang ky Windows Service..."
   DetailPrint "==================================================="
   
-  ; Gỡ service cũ (nếu có) trước khi cài mới
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" stop ${SERVICE_NAME}'
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" remove ${SERVICE_NAME} confirm'
   
-  ; Cài service mới - dùng service-wrapper.bat thay vì gọi trực tiếp node
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" install ${SERVICE_NAME} "$INSTDIR\service-wrapper.bat"'
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" set ${SERVICE_NAME} DisplayName "docFormat PDF Helper"'
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" set ${SERVICE_NAME} Description "Helper service de xuat PDF cho docFormat Pro"'
@@ -136,19 +119,16 @@ Section "Cài đặt docFormat PDF Helper" SecMain
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" set ${SERVICE_NAME} AppStdout "$INSTDIR\service.log"'
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" set ${SERVICE_NAME} AppStderr "$INSTDIR\service-error.log"'
   
-  ; --- Khởi động service ---
-  DetailPrint "Đang khởi động Service..."
+  DetailPrint "Dang khoi dong Service..."
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" start ${SERVICE_NAME}'
   
-  ; --- Tạo shortcut Start Menu ---
   CreateDirectory "$SMPROGRAMS\docFormat PDF Helper"
   CreateShortcut "$SMPROGRAMS\docFormat PDF Helper\docFormat Pro (Web).lnk" "${APP_URL}"
-  CreateShortcut "$SMPROGRAMS\docFormat PDF Helper\Trạng thái Helper.lnk" "http://localhost:8787"
-  CreateShortcut "$SMPROGRAMS\docFormat PDF Helper\Khởi động Helper.lnk" "$INSTDIR\start-service.bat"
-  CreateShortcut "$SMPROGRAMS\docFormat PDF Helper\Dừng Helper.lnk" "$INSTDIR\stop-service.bat"
-  CreateShortcut "$SMPROGRAMS\docFormat PDF Helper\Gỡ cài đặt.lnk" "$INSTDIR\uninstall.exe"
+  CreateShortcut "$SMPROGRAMS\docFormat PDF Helper\Trang thai Helper.lnk" "http://localhost:8787"
+  CreateShortcut "$SMPROGRAMS\docFormat PDF Helper\Khoi dong Helper.lnk" "$INSTDIR\start-service.bat"
+  CreateShortcut "$SMPROGRAMS\docFormat PDF Helper\Dung Helper.lnk" "$INSTDIR\stop-service.bat"
+  CreateShortcut "$SMPROGRAMS\docFormat PDF Helper\Go cai dat.lnk" "$INSTDIR\uninstall.exe"
   
-  ; --- Đăng ký vào Add/Remove Programs ---
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayName" "${APP_NAME}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "Publisher" "${APP_PUBLISHER}"
@@ -158,27 +138,24 @@ Section "Cài đặt docFormat PDF Helper" SecMain
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "NoRepair" 1
   
-  ; --- Tạo uninstaller ---
   WriteUninstaller "$INSTDIR\uninstall.exe"
   
   DetailPrint "==================================================="
-  DetailPrint "  Cài đặt hoàn tất!"
-  DetailPrint "  Helper đang chạy tại: http://localhost:8787"
+  DetailPrint "  Cai dat hoan tat!"
+  DetailPrint "  Helper dang chay tai: http://localhost:8787"
   DetailPrint "==================================================="
 SectionEnd
 
 ; ============================================================
-; SECTION GỠ CÀI ĐẶT
+; SECTION GO CAI DAT
 ; ============================================================
 Section "Uninstall"
-  DetailPrint "Đang dừng và gỡ Service..."
+  DetailPrint "Dang dung va go Service..."
   
-  ; Dừng và gỡ service
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" stop ${SERVICE_NAME}'
   nsExec::ExecToLog '"$INSTDIR\bin\nssm.exe" remove ${SERVICE_NAME} confirm'
   
-  ; Xóa file
-  DetailPrint "Đang xóa file..."
+  DetailPrint "Dang xoa file..."
   Delete "$INSTDIR\server.cjs"
   Delete "$INSTDIR\package.json"
   Delete "$INSTDIR\service-wrapper.bat"
@@ -189,26 +166,17 @@ Section "Uninstall"
   Delete "$INSTDIR\service-error.log"
   Delete "$INSTDIR\uninstall.exe"
   
-  ; Xóa thư mục bin (chứa nssm.exe)
   RMDir /r "$INSTDIR\bin"
-  
-  ; Xóa thư mục node_modules (npm install đã tạo)
   RMDir /r "$INSTDIR\node_modules"
-  
-  ; Xóa Node.js portable nếu có
   RMDir /r "$INSTDIR\node-portable"
-  
-  ; Xóa thư mục cài đặt
   RMDir "$INSTDIR"
   
-  ; Xóa Start Menu shortcuts
   Delete "$SMPROGRAMS\docFormat PDF Helper\*.*"
   RMDir "$SMPROGRAMS\docFormat PDF Helper"
   
-  ; Xóa registry entries
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
   
-  DetailPrint "Đã gỡ cài đặt hoàn tất."
+  DetailPrint "Da go cai dat hoan tat."
   
-  MessageBox MB_OK "docFormat PDF Helper đã được gỡ cài đặt.$\r$\n$\r$\nLưu ý: LibreOffice (nếu có) không bị gỡ vì có thể được sử dụng bởi phần mềm khác.$\r$\nNếu muốn gỡ LibreOffice, vui lòng vào Settings > Apps."
+  MessageBox MB_OK "docFormat PDF Helper da duoc go cai dat."
 SectionEnd
