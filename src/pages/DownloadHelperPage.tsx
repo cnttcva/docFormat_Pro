@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 
 // URL tải installer - SẼ CẬP NHẬT khi xong PDF-3
-const INSTALLER_DOWNLOAD_URL = 'https://github.com/danglaicao/docformat-pro/releases/latest';
+const INSTALLER_DOWNLOAD_URL = 'https://github.com/cnttcva/docFormat_Pro/releases/latest';
 const VIDEO_TUTORIAL_URL = 'https://www.youtube.com/results?search_query=docformat+pro+huong+dan+cai+pdf+helper';
 
 interface FAQItemProps {
