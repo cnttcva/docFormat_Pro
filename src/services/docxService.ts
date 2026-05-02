@@ -408,9 +408,6 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
     const protectedElements = new Set<Element>();
     const lineTables = new Set<Element>();
 
-    // Tự động tạo khoảng cách 01 dòng đơn giữa phần trích yếu và phần thân văn bản.
-    // Áp dụng cho Kế hoạch, Báo cáo, Nghị quyết, Hướng dẫn, Biên bản...
-    // Không áp dụng cho Quyết định vì Quyết định có bố cục riêng.
     let shouldAddSingleLineBeforeBody = false;
 
     const limit = Math.min(paragraphs.length, 20);
@@ -523,7 +520,8 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
 
                     linesCaptured++;
                 } else {
-                    abstractElements.add(tempP);
+                    const toDelete = tempP;
+                    toDelete.parentNode?.removeChild(toDelete);
                 }
 
                 currentIndex++;
@@ -596,8 +594,6 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
                 }
             }
 
-            // Sau phần tên loại văn bản + trích yếu, phần thân văn bản cần cách 01 dòng đơn.
-            // Ngoại lệ: Quyết định hành chính và Quyết định Đảng có bố cục riêng nên không thêm khoảng cách này.
             if (
                 detectedDocType !== "QUYẾT ĐỊNH" &&
                 finalOptions.isDecision !== true &&
@@ -614,6 +610,9 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
     let inKinhGuiBlock = false;
     let addSpaceBeforeMainContent = false;
     let isBodyArea = true;
+    
+    let hasPassedDecisionWord = false; 
+    let validContentLines = 0;
 
     const isSchoolDecision =
       finalOptions.isDecision === true &&
@@ -630,11 +629,25 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
       const trimmedPTextOriginal = pText.trim();
       const upperText = trimmedPTextOriginal.toUpperCase();
 
+      if (upperText === "QUYẾT ĐỊNH" || upperText === "QUYẾT ĐỊNH:") {
+          hasPassedDecisionWord = true;
+      }
+
+      if (trimmedPTextOriginal.length > 0) {
+          validContentLines++;
+      }
+
       if (isBodyArea && trimmedPTextOriginal.length > 0) {
+          const isTopHeaderAuth = (detectedDocType === "QUYẾT ĐỊNH" || finalOptions.isDecision === true) && 
+                                  !hasPassedDecisionWord && 
+                                  (upperText.includes("HIỆU TRƯỞNG") || upperText.includes("GIÁM ĐỐC") || upperText.includes("CHỦ TỊCH") || upperText.includes("CẤP ỦY"));
+
           if (
             upperText.startsWith("NƠI NHẬN:") ||
             upperText === "NƠI NHẬN" ||
             (
+              !isTopHeaderAuth && 
+              validContentLines > 2 && 
               trimmedPTextOriginal.length < 40 &&
               (
                 upperText.includes("HIỆU TRƯỞNG") ||
@@ -691,12 +704,6 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
 
       const pPr = getOrCreate(p, "w:pPr");
 
-      // Nếu vừa đi qua phần tiêu đề/trích yếu, đoạn nội dung đầu tiên sẽ được cách phía trên 01 dòng đơn.
-      // Ví dụ:
-      // KẾ HOẠCH
-      // Công tác chi bộ tháng 03 năm 2026
-      //
-      // I. ĐÁNH GIÁ...
       if (
         shouldAddSingleLineBeforeBody &&
         isBodyArea &&
@@ -943,10 +950,8 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
 
       if (isBasisLine) {
         if (isSchoolDecision) {
-          // Quyết định hành chính: phần căn cứ in nghiêng
           isItalicBasis = true;
         } else if (isPartyDecision) {
-          // Quyết định Đảng: phần căn cứ in thường, chữ đứng
           isItalicBasis = false;
         } else if (detectedDocType === "QUYẾT ĐỊNH" || detectedDocType === "NGHỊ QUYẾT") {
           isItalicBasis = true;
@@ -1196,6 +1201,59 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
                 }
             }
         }
+    }
+
+    // ============================================================
+    // 🧹 BƯỚC DỌN DẸP CUỐI CÙNG - INLINE
+    // Lệnh mới: Tiêu diệt TOÀN BỘ dòng rỗng không có ngoại lệ
+    // ============================================================
+    const bodyForCleanup = getNodes(doc, "body")[0];
+    if (bodyForCleanup) {
+      const W_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+      
+      const checkParagraphEmpty = (elem: Element): boolean => {
+        const textNodes = elem.getElementsByTagNameNS(W_NAMESPACE, "t");
+        for (let i = 0; i < textNodes.length; i++) {
+          const txt = textNodes[i].textContent || "";
+          if (txt.replace(/[\s\u200B-\u200D\uFEFF\xA0]+/g, '').length > 0) {
+            return false;
+          }
+        }
+        
+        if (elem.getElementsByTagNameNS(W_NAMESPACE, "drawing").length > 0) return false;
+        if (elem.getElementsByTagNameNS(W_NAMESPACE, "pict").length > 0) return false;
+        if (elem.getElementsByTagNameNS(W_NAMESPACE, "object").length > 0) return false;
+        if (elem.getElementsByTagNameNS(W_NAMESPACE, "sectPr").length > 0) return false;
+        
+        const brs = elem.getElementsByTagNameNS(W_NAMESPACE, "br");
+        for (let i = 0; i < brs.length; i++) {
+          const brType = brs[i].getAttribute("w:type") || brs[i].getAttributeNS(W_NAMESPACE, "type");
+          if (brType === "page") return false;
+        }
+        
+        return true;
+      };
+      
+      const getLocalName = (elem: Element): string => {
+        const tagName = elem.tagName || elem.nodeName || "";
+        return tagName.includes(":") ? tagName.split(":")[1] : tagName;
+      };
+      
+      let totalRemoved = 0;
+      
+      // Chỉ cần 1 Pass duy nhất để quét sạch
+      const childNodes = Array.from(bodyForCleanup.childNodes);
+      for (const node of childNodes) {
+        if (node.nodeType === 1) { 
+          const elem = node as Element;
+          if (getLocalName(elem) === "p" && checkParagraphEmpty(elem)) {
+            elem.parentNode?.removeChild(elem);
+            totalRemoved++;
+          }
+        }
+      }
+      
+      logs.push(`Cleanup: removed ${totalRemoved} empty paragraphs unconditionally`);
     }
 
     const serializer = new XMLSerializer();

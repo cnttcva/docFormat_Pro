@@ -451,8 +451,8 @@ export const createHeaderTemplate = (doc: Document, options: any): Element => {
         partySymbolStr = `Số: ...-${symbol}/${suffix}`;
       }
 
-      appendSmartLines(tc1, org.partyUpper, false);
-      appendSmartLines(tc1, org.partyCell, true);
+      appendSmartLines(tc1, org.partyUpper, false, false, 14);
+      appendSmartLines(tc1, org.partyCell, true, false, 14);
       tc1.appendChild(createStyledP('*', false, false));
       tc1.appendChild(createStyledP(partySymbolStr, false, false));
 
@@ -462,8 +462,8 @@ export const createHeaderTemplate = (doc: Document, options: any): Element => {
         });
       }
 
-      tc2.appendChild(createMottoP('ĐẢNG CỘNG SẢN VIỆT NAM', true, 13));
-      appendSafeTable(tc2, createMottoLineTable('3400'));
+      tc2.appendChild(createMottoP('ĐẢNG CỘNG SẢN VIỆT NAM', true, 15));
+      appendSafeTable(tc2, createMottoLineTable('4100'));
       tc2.appendChild(createStyledP('', false, false));
       tc2.appendChild(createStyledP(currentDateStr, false, true, 14));
       break;
