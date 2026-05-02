@@ -95,30 +95,71 @@ const formatCongVanSummary = (summary?: string) => {
     });
 };
 
+// ĐIỀU CHỈNH 1: Trả lại sự phân biệt dấu phẩy (,) cho Đảng và chấm phẩy (;) cho Hành chính
 const normalizeReceiverEnd = (text: string, index: number, total: number, isParty: boolean) => {
-  let cleanText = normalizeText(text);
+  let cleanText = normalizeText(text)
+    .replace(/\btpt\b/ig, 'TPT')
+    .replace(/\bhscb\b/ig, 'HSCB')
+    .replace(/\bbt\b/ig, 'BT')
+    .replace(/[\.\,\;]+$/, ''); // Gọt bỏ dấu câu cũ
 
   if (!cleanText) return cleanText;
 
+  // Nếu là văn bản Đảng: Dùng dấu phẩy (,), dòng cuối dùng dấu chấm (.)
   if (isParty) {
-    cleanText = cleanText
-      .replace(/\btpt\b/ig, 'TPT')
-      .replace(/\bhscb\b/ig, 'HSCB')
-      .replace(/\bbt\b/ig, 'BT')
-      .replace(/[\.\,\;]+$/, '');
-
     return index === total - 1 ? `${cleanText}.` : `${cleanText},`;
   }
+  
+  // Nếu là văn bản Hành chính: Dùng dấu chấm phẩy (;), dòng cuối dùng dấu chấm (.)
+  return index === total - 1 ? `${cleanText}.` : `${cleanText};`;
+};
 
-  cleanText = cleanText.replace(/[\.\,\;]+$/, '');
+// ĐIỀU CHỈNH 2: Cập nhật tên "Các tổ chức đoàn thể" cho Nghị Quyết
+const generateSmartReceivers = (headerType: HeaderType, docType: string, org: any, options: any): string[] => {
+  const type = (docType || '').toUpperCase();
+  const isCongVan = options.isCongVan === true || type === 'CÔNG VĂN';
+  const isDecision = options.isDecision === true || type.includes('QUYẾT ĐỊNH');
 
-  const lower = cleanText.toLowerCase();
+  // I. DÀNH CHO VĂN BẢN ĐẢNG (Không dùng VT)
+  if (headerType === HeaderType.PARTY) {
+    if (isDecision) return [`- Như Điều ...`, `- ${org.partyUpper}`, `- Lưu: Chi bộ`];
+    // Đã thay đổi "Các đoàn thể (nếu liên quan)" thành "Các tổ chức đoàn thể"
+    if (type.includes('NGHỊ QUYẾT')) return [`- ${org.partyUpper}`, `- Đảng viên chi bộ`, `- Ban Giám hiệu nhà trường`, `- Các tổ chức đoàn thể`, `- Lưu: Chi bộ`];
+    if (type.includes('KẾ HOẠCH') || type.includes('CHƯƠNG TRÌNH')) return [`- ${org.partyUpper}`, `- Chi ủy, đảng viên chi bộ`, `- Ban Giám hiệu`, `- Các tổ chức đoàn thể`, `- Lưu: Chi bộ`];
+    if (type.includes('BIÊN BẢN')) return [`- Chi ủy`, `- Đảng viên chi bộ`, `- Lưu: Chi bộ`];
+    if (type.includes('TỜ TRÌNH')) return [`- ${org.partyUpper} (để xem xét, quyết định)`, `- Lưu: Chi bộ`];
+    if (type.includes('THÔNG BÁO') || type.includes('KẾT LUẬN')) return [`- Đảng viên chi bộ`, `- Ban Giám hiệu`, `- Các tổ chức đoàn thể`, `- Lưu: Chi bộ`];
+    if (type.includes('BÁO CÁO')) return [`- ${org.partyUpper}`, `- Lưu: Chi bộ`];
 
-  if (lower.includes('lưu') || lower.includes('vt')) {
-    return `${cleanText}.`;
+    // Mặc định cho văn bản Đảng khác
+    return [`- ${org.partyUpper} (b/c)`, `- Đảng viên chi bộ (t/h)`, `- Lưu: Chi bộ`];
   }
 
-  return index === total - 1 ? `${cleanText}.` : `${cleanText};`;
+  // II. DÀNH CHO VĂN BẢN NỘI BỘ (TỔ CHUYÊN MÔN / VĂN PHÒNG)
+  if (headerType === HeaderType.DEPARTMENT) {
+    return [
+      `- Ban giám hiệu (b/c)`,
+      `- Các thành viên trong tổ (t/h)`,
+      `- Lưu: VT`
+    ];
+  }
+
+  // III. DÀNH CHO VĂN BẢN HÀNH CHÍNH NHÀ TRƯỜNG (Bắt buộc dùng VT)
+  if (headerType === HeaderType.SCHOOL) {
+    if (isCongVan) return [`- Như trên`, `- Lưu: VT`];
+    if (isDecision) return [`- Như Điều ...`, `- ${org.governingBody} (b/c)`, `- Ban Giám hiệu`, `- Các bộ phận liên quan`, `- Lưu: VT`];
+    if (type.includes('THÔNG BÁO')) return [`- Toàn thể CB, GV, NV`, `- Các tổ chuyên môn`, `- Ban Giám hiệu`, `- Lưu: VT`];
+    if (type.includes('KẾ HOẠCH')) return [`- ${org.governingBody} (b/c)`, `- Ban Giám hiệu`, `- Các tổ chuyên môn`, `- Các bộ phận liên quan`, `- Lưu: VT`];
+    if (type.includes('BÁO CÁO')) return [`- ${org.governingBody}`, `- Ban Giám hiệu`, `- Lưu: VT`];
+    if (type.includes('TỜ TRÌNH')) return [`- ${org.governingBody} (hoặc cấp có thẩm quyền)`, `- Lưu: VT`];
+    if (type.includes('BIÊN BẢN')) return [`- Các thành phần tham dự`, `- Ban Giám hiệu`, `- Lưu: VT`];
+    if (type.includes('QUY CHẾ') || type.includes('QUY ĐỊNH') || type.includes('NỘI QUY')) return [`- Toàn thể CB, GV, NV`, `- Các tổ chuyên môn`, `- Các đoàn thể trong trường`, `- Lưu: VT`];
+
+    // Mặc định cho hành chính
+    return [`- ${org.governingBody} (b/c)`, `- Lãnh đạo ${org.orgName} (b/c)`, `- Lưu: VT`];
+  }
+
+  return [`- Lưu: VT`];
 };
 
 export const createHeaderTemplate = (doc: Document, options: any): Element => {
@@ -675,6 +716,7 @@ export const createSignatureBlock = (doc: Document, options: any, docType: strin
     tc.appendChild(createReceiverP('Nơi nhận:', true, isParty));
 
     receivers.forEach((txt, index) => {
+      // Truyền tham số isParty vào để kiểm tra việc gán dấu câu (, hoặc ;)
       const normalized = normalizeReceiverEnd(txt, index, receivers.length, isParty);
       tc.appendChild(createReceiverP(normalized, false, isParty));
     });
@@ -785,10 +827,9 @@ export const createSignatureBlock = (doc: Document, options: any, docType: strin
     receiverTr.appendChild(emptyTc);
     emptyTc.appendChild(createTightP('', false, false, false, 'center', 12));
 
-    const minutesReceivers = options.extractedReceivers || [
-      '- Như thành phần tham dự',
-      '- Lưu: VT, Hồ sơ'
-    ];
+    const minutesReceivers = (options.extractedReceivers && options.extractedReceivers.length > 0)
+      ? options.extractedReceivers
+      : generateSmartReceivers(options.headerType, docType, org, options);
 
     appendReceivers(receiverTc, minutesReceivers, false);
 
@@ -807,26 +848,13 @@ export const createSignatureBlock = (doc: Document, options: any, docType: strin
   const isParty = options.headerType === HeaderType.PARTY;
   const isDecision = options.isDecision === true || docType?.toUpperCase?.().includes('QUYẾT ĐỊNH');
 
+  const finalReceivers = (options.extractedReceivers && options.extractedReceivers.length > 0)
+    ? options.extractedReceivers
+    : generateSmartReceivers(options.headerType, docType, org, options);
+
   switch (options.headerType) {
     case HeaderType.PARTY: {
-      const partyReceiversRaw =
-        options.extractedReceivers ||
-        (isDecision
-          ? [
-              `- ${org.partyUpper} (để báo cáo)`,
-              '- UBKT Đảng ủy (để báo cáo)',
-              '- Như điều thi hành (thực hiện)',
-              '- Lưu Chi bộ & HSKT'
-            ]
-          : [
-              `- ${org.partyUpper} (b/c)`,
-              `- Chi ủy và Lãnh đạo ${org.orgName}`,
-              '- BT Chi Đoàn, TPT Đội',
-              '- Đảng viên (t/h)',
-              '- Lưu HSCB'
-            ]);
-
-      appendReceivers(tc1, partyReceiversRaw, true);
+      appendReceivers(tc1, finalReceivers, true);
 
       if (isDecision) {
         tc2.appendChild(createTightP('T/M CHI BỘ', true, false, false, 'center', 14));
@@ -869,13 +897,7 @@ export const createSignatureBlock = (doc: Document, options: any, docType: strin
         tc1.appendChild(createTightP('', false, false, false, 'center', 14));
       }
 
-      const depReceivers = options.extractedReceivers || [
-        `- Lãnh đạo ${org.orgName} (b/c)`,
-        '- Thành viên Tổ (t/h)',
-        '- Lưu HSTCM'
-      ];
-
-      appendReceivers(tc1, depReceivers, false);
+      appendReceivers(tc1, finalReceivers, false);
 
       const sTitleDep = signerTitle || 'TỔ TRƯỞNG';
       tc2.appendChild(createTightP(sTitleDep.toUpperCase(), true, false, false, 'center', 14));
@@ -887,24 +909,7 @@ export const createSignatureBlock = (doc: Document, options: any, docType: strin
 
     case HeaderType.SCHOOL:
     default: {
-      const schoolReceivers =
-        options.extractedReceivers ||
-        (isDecision
-          ? [
-              '- Như các điều thi hành',
-              `- ${org.governingBody}`,
-              '- Lưu: VT'
-            ]
-          : [
-              `- ${org.governingBody} (b/c)`,
-              `- Lãnh đạo ${org.orgName} (b/c)`,
-              '- Cấp ủy chi bộ (b/c)',
-              '- Các tổ chuyên môn, Văn phòng (t/h)',
-              '- Giáo viên, nhân viên (t/h)',
-              '- Lưu VT, EDOC'
-            ]);
-
-      appendReceivers(tc1, schoolReceivers, false);
+      appendReceivers(tc1, finalReceivers, false);
 
       const sTitleSchool = signerTitle || 'HIỆU TRƯỞNG';
 
