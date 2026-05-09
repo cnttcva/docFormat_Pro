@@ -12,6 +12,7 @@ const normalizeForDetect = (value: string): string => {
   return String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[Đđ]/g, match => (match === 'Đ' ? 'D' : 'd'))
     .replace(/\s+/g, ' ')
     .trim()
     .toUpperCase();
@@ -90,12 +91,12 @@ const isQuyetDinhNT = (options: any, docType: string): boolean => {
 
 const isMainDecisionTitleLine = (text: string): boolean => {
   const t = normalizeForDetect(text);
-  return t === 'QUYET DINH' || t === 'QUYET DINH:';
+  return t === 'QUYET DINH';
 };
 
 const isMainDecisionCommandLine = (text: string): boolean => {
   const t = normalizeForDetect(text);
-  return t === 'QUYET DINH:' || t === 'QUYET DINH';
+  return t === 'QUYET DINH:';
 };
 
 const isMainDecisionArticleLine = (text: string): boolean => {
@@ -154,7 +155,102 @@ const isAttachmentNoteStartLine = (text: string): boolean => {
   const raw = normalizeText(text);
   const t = normalizeForDetect(text);
 
-  return raw.includes('(') && t.includes('BAN HANH KEM THEO');
+  if (!raw) return false;
+
+  /**
+   * Mẫu chuẩn của văn bản ban hành kèm theo:
+   * (Ban hành kèm theo Quyết định số .../QĐ-..., ngày ... tháng ... năm ...)
+   */
+  return (
+    raw.includes('(') &&
+    t.includes('BAN HANH KEM THEO') &&
+    t.includes('QUYET DINH')
+  );
+};
+
+const isAttachmentNoteContinuationLine = (text: string): boolean => {
+  const raw = normalizeText(text);
+  const t = normalizeForDetect(text);
+
+  if (!raw) return false;
+
+  return (
+    t.includes('QUYET DINH') ||
+    t.includes('/QD') ||
+    t.includes('SO ') ||
+    t.includes('NGAY') ||
+    t.includes('THANG') ||
+    t.includes('NAM') ||
+    t.includes('CUA HIEU TRUONG') ||
+    t.includes('CUA NHA TRUONG') ||
+    raw.includes(')')
+  );
+};
+
+const isLikelyAttachmentSubtitleLine = (text: string): boolean => {
+  const raw = normalizeText(text);
+  const t = normalizeForDetect(text);
+
+  if (!raw) return false;
+  if (raw.length > 180) return false;
+  if (isMainDecisionTitleLine(text)) return false;
+  if (isMainDecisionArticleLine(text)) return false;
+  if (isDecisionLegalBasisLine(text)) return false;
+  if (isDecisionAuthorityLine(text)) return false;
+  if (isNationalHeaderLine(text)) return false;
+  if (isMottoLine(text)) return false;
+  if (isDateLine(text)) return false;
+  if (isNoiNhanLine(text)) return false;
+  if (isSignerLine(text)) return false;
+  if (isPageNumberLine(text)) return false;
+  if (isDecorativeLine(text)) return false;
+  if (t.startsWith('V/V') || t.startsWith('VE VIEC')) return false;
+
+  return !/[;:]$/.test(raw);
+};
+
+const isLikelyGenericAttachmentTitleLine = (text: string): boolean => {
+  const raw = normalizeText(text);
+  const t = normalizeForDetect(text);
+
+  if (!isLikelyAttachmentSubtitleLine(text)) return false;
+  if (raw.length < 8) return false;
+  if (raw.length > 180) return false;
+
+  const letters = raw.replace(/[^A-Za-zÀ-ỹĐđ]/g, '');
+  const isMostlyUppercase =
+    letters.length >= 6 &&
+    letters === letters.toUpperCase();
+
+  const hasAttachmentKeyword =
+    t.includes('DANH SACH') ||
+    t.includes('BANG PHAN CONG') ||
+    t.includes('PHAN CONG') ||
+    t.includes('THANH VIEN') ||
+    t.includes('HOI DONG') ||
+    t.includes('LICH') ||
+    t.includes('NOI DUNG') ||
+    t.includes('CHUONG TRINH') ||
+    t.includes('BAO CAO') ||
+    t.includes('BIEN BAN') ||
+    t.includes('PHIEU') ||
+    t.includes('MAU') ||
+    t.includes('DE CUONG') ||
+    t.includes('THONG KE') ||
+    t.includes('TONG HOP');
+
+  return isMostlyUppercase || hasAttachmentKeyword;
+};
+
+const isLikelyGenericAttachmentTitleBlock = (block: Element): boolean => {
+  if (getLocalName(block) !== 'p') return false;
+
+  const text = getText(block);
+
+  return (
+    isAttachmentTitleLine(text) ||
+    isLikelyGenericAttachmentTitleLine(text)
+  );
 };
 
 const isChapterLine = (text: string): boolean => {
@@ -286,41 +382,303 @@ const isAttachmentHeaderBlock = (block: Element): boolean => {
   );
 };
 
-const findPreviousAttachmentTitle = (blocks: Element[], index: number): Element | null => {
-  const from = Math.max(0, index - 8);
+const getTableRows = (tbl: Element): Element[] => {
+  return Array.from(tbl.getElementsByTagNameNS(W_NS, 'tr')) as Element[];
+};
 
-  for (let i = index - 1; i >= from; i--) {
-    const text = getText(blocks[i]);
+const getTableCells = (tr: Element): Element[] => {
+  return Array.from(tr.getElementsByTagNameNS(W_NS, 'tc')) as Element[];
+};
 
-    if (isAttachmentTitleLine(text)) return blocks[i];
+const getTableRowText = (tr: Element): string => {
+  return normalizeText(tr.textContent || '');
+};
 
-    if (isMainDecisionArticleLine(text)) return null;
-    if (isMainDecisionCommandLine(text)) return null;
-    if (isDecisionLegalBasisLine(text)) return null;
+const isLikelyDataTableBlock = (block: Element): boolean => {
+  if (getLocalName(block) !== 'tbl') return false;
+
+  const rows = getTableRows(block);
+  if (rows.length < 2) return false;
+
+  const firstRow = rows[0];
+  const firstRowCells = getTableCells(firstRow);
+  const firstRowText = normalizeForDetect(getTableRowText(firstRow));
+  const tableText = normalizeForDetect(getText(block));
+
+  if (firstRowCells.length >= 2) {
+    const hasCommonHeader =
+      firstRowText.includes('TT') ||
+      firstRowText.includes('STT') ||
+      firstRowText.includes('HO VA TEN') ||
+      firstRowText.includes('CHUC VU') ||
+      firstRowText.includes('NHIEM VU') ||
+      firstRowText.includes('GHI CHU') ||
+      firstRowText.includes('NOI DUNG') ||
+      firstRowText.includes('THOI GIAN') ||
+      firstRowText.includes('DIA DIEM') ||
+      firstRowText.includes('THANH PHAN');
+
+    if (hasCommonHeader) return true;
   }
 
-  return null;
+  const hasNumberedRows = rows.slice(1, 8).some(row => {
+    const rowText = normalizeForDetect(getTableRowText(row));
+    return /^[0-9]{1,3}(\s|$)/.test(rowText);
+  });
+
+  if (firstRowCells.length >= 2 && hasNumberedRows) return true;
+
+  return rows.length >= 3 && firstRowCells.length >= 2 && tableText.length >= 80;
+};
+
+const isAttachmentSearchBoundaryLine = (text: string): boolean => {
+  return (
+    isMainDecisionArticleLine(text) ||
+    isMainDecisionCommandLine(text) ||
+    isDecisionLegalBasisLine(text) ||
+    isDecisionAuthorityLine(text) ||
+    isNoiNhanLine(text) ||
+    isSignerLine(text) ||
+    isNationalHeaderLine(text) ||
+    isMottoLine(text) ||
+    isDateLine(text)
+  );
+};
+
+const findAttachmentHeadingGroupStartBeforeNote = (
+  blocks: Element[],
+  noteIndex: number,
+  lowerBoundIndex = 0
+): Element | null => {
+  let groupStart: Element | null = null;
+  let foundHeadingText = false;
+
+  /**
+   * Quét ngược không giới hạn 40 block nữa. Với một số file Word, giữa nội dung
+   * Quyết định và văn bản kèm theo có rất nhiều paragraph rỗng/ngắt trang nên
+   * giới hạn gần sẽ bỏ sót tiêu đề và dễ làm sai mốc chèn.
+   */
+  for (let i = noteIndex - 1; i >= lowerBoundIndex; i--) {
+    const block = blocks[i];
+    const text = getText(block);
+    const local = getLocalName(block);
+
+    if (isEmptyLine(text) || isDecorativeLine(text) || isPageNumberLine(text)) {
+      continue;
+    }
+
+    if (isAttachmentSearchBoundaryLine(text)) {
+      break;
+    }
+
+    /**
+     * Bỏ qua header hành chính cũ nếu có. Không xóa, chỉ không lấy nó làm mốc
+     * bắt đầu của văn bản kèm theo.
+     */
+    if (isAttachmentHeaderBlock(block)) {
+      continue;
+    }
+
+    if (local === 'p' && isLikelyAttachmentSubtitleLine(text)) {
+      groupStart = block;
+      foundHeadingText = true;
+      continue;
+    }
+
+    if (foundHeadingText) {
+      break;
+    }
+  }
+
+  return groupStart;
+}
+
+const findPreviousAttachmentTitle = (blocks: Element[], index: number): Element | null => {
+  return findAttachmentHeadingGroupStartBeforeNote(blocks, index);
 };
 
 const findPreviousAttachmentStartCandidate = (blocks: Element[], index: number): Element | null => {
   const from = Math.max(0, index - 12);
 
   for (let i = index - 1; i >= from; i--) {
-    const text = getText(blocks[i]);
+    const block = blocks[i];
+    const text = getText(block);
 
-    if (isAttachmentTitleLine(text)) return blocks[i];
+    if (isEmptyLine(text) || isDecorativeLine(text)) continue;
+
+    if (isLikelyGenericAttachmentTitleBlock(block)) return block;
 
     if (isMainDecisionArticleLine(text)) return null;
     if (isMainDecisionCommandLine(text)) return null;
     if (isDecisionLegalBasisLine(text)) return null;
+    if (isDecisionAuthorityLine(text)) return null;
+    if (isNoiNhanLine(text)) return null;
+    if (isSignerLine(text)) return null;
   }
 
   return blocks[index] || null;
 };
 
+
+const isMainDecisionEndingText = (text: string): boolean => {
+  const t = normalizeForDetect(text);
+
+  return (
+    t.includes('CAN CU QUYET DINH THI HANH') ||
+    t.includes('CAN CU QUYET DINH NAY THI HANH') ||
+    t.includes('QUYET DINH NAY CO HIEU LUC') ||
+    t.includes('CO HIEU LUC KE TU NGAY KY') ||
+    t.includes('KE TU NGAY KY') ||
+    t.includes('CHIU TRACH NHIEM THI HANH QUYET DINH NAY') ||
+    t.includes('CHIU TRACH NHIEM THI HANH') ||
+    t.includes('QUYET DINH THI HANH') ||
+    t.includes('THI HANH QUYET DINH NAY')
+  );
+};
+
+const isMainDecisionEndingArticleLine = (text: string): boolean => {
+  return isArticleLine(text) && isMainDecisionEndingText(text);
+};
+
+const isRealContentBlock = (block: Element): boolean => {
+  const text = getText(block);
+
+  if (!text) return false;
+  if (isEmptyLine(text)) return false;
+  if (isDecorativeLine(text)) return false;
+  if (isPageNumberLine(text)) return false;
+  if (getLocalName(block) === 'sectPr') return false;
+
+  return true;
+};
+
+const isReceiverItemLine = (text: string): boolean => {
+  const raw = normalizeText(text);
+  const t = normalizeForDetect(text);
+
+  return (
+    raw.startsWith('-') ||
+    raw.startsWith('+') ||
+    t.startsWith('LUU:')
+  );
+};
+
+const hasAttachmentEvidenceNearby = (blocks: Element[], startIndex: number): boolean => {
+  const to = Math.min(blocks.length, startIndex + 16);
+
+  for (let i = startIndex; i < to; i++) {
+    const block = blocks[i];
+    const text = getText(block);
+
+    if (isAttachmentNoteStartLine(text)) return true;
+    if (isLikelyDataTableBlock(block)) return true;
+    if (isLikelyGenericAttachmentTitleBlock(block)) return true;
+    if (isChapterLine(text)) return true;
+  }
+
+  return false;
+};
+
+/**
+ * Cách nhận diện chính, an toàn nhất cho Quyết định nhà trường:
+ * - Tìm điều khoản kết thúc phần Quyết định chính.
+ * - Mọi nội dung thật nằm sau điều khoản này được coi là văn bản ban hành kèm theo.
+ * - Nếu giữa điều khoản kết thúc và văn bản kèm theo có chữ ký/nơi nhận cũ, bỏ qua vùng chữ ký đó.
+ * - Không xóa/can thiệp nội dung từ attachmentStart trở đi.
+ */
+const findAttachmentStartAfterMainDecisionEnding = (doc: Document): Element | null => {
+  const body = getBody(doc);
+  if (!body) return null;
+
+  const blocks = getDirectBodyBlocks(body);
+
+  let decisionCommandIndex = -1;
+  let currentArticleStartIndex = -1;
+  let currentArticleText = '';
+  let endingContentIndex = -1;
+
+  for (let i = 0; i < blocks.length; i++) {
+    const text = getText(blocks[i]);
+    if (!text) continue;
+
+    if (decisionCommandIndex < 0) {
+      if (isMainDecisionCommandLine(text)) {
+        decisionCommandIndex = i;
+      }
+      continue;
+    }
+
+    /**
+     * Chỉ xét trong phần Quyết định chính. Nếu gặp Nơi nhận/chữ ký thì dừng,
+     * vì sau đó không còn là thân nội dung quyết định chính.
+     */
+    if (isNoiNhanLine(text) || isSignerLine(text)) {
+      break;
+    }
+
+    if (isArticleLine(text)) {
+      currentArticleStartIndex = i;
+      currentArticleText = text;
+
+      if (isMainDecisionEndingArticleLine(text)) {
+        endingContentIndex = i;
+      }
+
+      continue;
+    }
+
+    if (currentArticleStartIndex >= 0) {
+      currentArticleText = `${currentArticleText} ${text}`;
+
+      if (isMainDecisionEndingText(currentArticleText)) {
+        endingContentIndex = i;
+      }
+    }
+  }
+
+  if (endingContentIndex < 0) return null;
+
+  /**
+   * Bản v5: mốc văn bản ban hành kèm theo là BLOCK NỘI DUNG THẬT ĐẦU TIÊN
+   * sau điều khoản kết thúc quyết định chính.
+   *
+   * Không tìm theo bảng ở gần/xa, không tìm theo dòng ghi chú, không xóa khoảng
+   * rỗng. Lý do: tài liệu Word có thể có rất nhiều paragraph rỗng/ngắt trang;
+   * nếu quét theo khoảng hoặc theo dấu hiệu phụ lục, bảng dễ bị bỏ sót và bị
+   * các bước dọn sau đó xóa nhầm.
+   */
+  for (let i = endingContentIndex + 1; i < blocks.length; i++) {
+    const block = blocks[i];
+    const text = getText(block);
+
+    if (!text || isEmptyLine(text) || isDecorativeLine(text) || isPageNumberLine(text)) {
+      continue;
+    }
+
+    if (getLocalName(block) === 'sectPr') {
+      continue;
+    }
+
+    /**
+     * Nếu file nguồn đã có sẵn chữ ký/nơi nhận ngay sau Điều cuối thì bỏ qua
+     * phần chữ ký đó để tìm văn bản kèm theo phía sau. Không xóa tại đây.
+     */
+    if (isNoiNhanLine(text) || isSignerLine(text) || isReceiverItemLine(text)) {
+      continue;
+    }
+
+    return block;
+  }
+
+  return null;
+};
+
 export const findQuyetDinhNTAttachmentStart = (doc: Document): Element | null => {
   const body = getBody(doc);
   if (!body) return null;
+
+  const attachmentAfterEnding = findAttachmentStartAfterMainDecisionEnding(doc);
+  if (attachmentAfterEnding) return attachmentAfterEnding;
 
   const blocks = getDirectBodyBlocks(body);
 
@@ -332,9 +690,7 @@ export const findQuyetDinhNTAttachmentStart = (doc: Document): Element | null =>
 
     if (!text) continue;
 
-    const t = normalizeForDetect(text);
-
-    if (mainDecisionTitleIndex < 0 && (t === 'QUYET DINH' || t === 'QUYET DINH:')) {
+    if (mainDecisionTitleIndex < 0 && isMainDecisionTitleLine(text)) {
       mainDecisionTitleIndex = i;
       continue;
     }
@@ -342,25 +698,26 @@ export const findQuyetDinhNTAttachmentStart = (doc: Document): Element | null =>
     if (
       mainDecisionTitleIndex >= 0 &&
       mainDecisionCommandIndex < 0 &&
-      (t === 'QUYET DINH:' || t === 'QUYET DINH')
+      isMainDecisionCommandLine(text)
     ) {
       mainDecisionCommandIndex = i;
       continue;
     }
   }
 
-  const scanStart = mainDecisionTitleIndex >= 0 ? mainDecisionTitleIndex + 1 : 0;
+  const scanStart =
+    mainDecisionCommandIndex >= 0
+      ? mainDecisionCommandIndex + 1
+      : mainDecisionTitleIndex >= 0
+        ? mainDecisionTitleIndex + 1
+        : 0;
 
-  for (let i = scanStart; i < blocks.length; i++) {
-    const text = getText(blocks[i]);
-
-    if (!text) continue;
-
-    if (isAttachmentTitleLine(text)) {
-      return blocks[i];
-    }
-  }
-
+  /**
+   * Ưu tiên cao nhất: dòng ghi chú chuẩn
+   * "(Ban hành kèm theo Quyết định số...)".
+   * Đây là dấu hiệu chắc nhất để xác định văn bản ban hành kèm theo,
+   * kể cả khi tiêu đề phụ lục không chứa QUY CHẾ, QUY ĐỊNH, DANH SÁCH...
+   */
   for (let i = scanStart; i < blocks.length; i++) {
     const text = getText(blocks[i]);
 
@@ -374,12 +731,52 @@ export const findQuyetDinhNTAttachmentStart = (doc: Document): Element | null =>
     }
   }
 
-  const chapterScanStart =
-    mainDecisionCommandIndex >= 0
-      ? mainDecisionCommandIndex + 1
-      : scanStart;
+  /**
+   * Fallback: tiêu đề phụ lục dạng quen thuộc hoặc dòng tiêu đề in hoa.
+   * Chỉ nhận nếu gần sau nó có ghi chú chuẩn hoặc bảng dữ liệu thật.
+   */
+  for (let i = scanStart; i < blocks.length; i++) {
+    const block = blocks[i];
+    const text = getText(block);
 
-  for (let i = chapterScanStart; i < blocks.length; i++) {
+    if (!text) continue;
+
+    if (isLikelyGenericAttachmentTitleBlock(block)) {
+      const to = Math.min(blocks.length, i + 12);
+
+      for (let j = i + 1; j < to; j++) {
+        const next = blocks[j];
+        const nextText = getText(next);
+
+        if (isAttachmentNoteStartLine(nextText)) return block;
+        if (isLikelyDataTableBlock(next)) return block;
+
+        if (isMainDecisionArticleLine(nextText)) break;
+        if (isDecisionLegalBasisLine(nextText)) break;
+        if (isNoiNhanLine(nextText)) break;
+        if (isSignerLine(nextText)) break;
+      }
+    }
+  }
+
+  /**
+   * Fallback: văn bản kèm theo bắt đầu trực tiếp bằng bảng.
+   */
+  for (let i = scanStart; i < blocks.length; i++) {
+    const block = blocks[i];
+
+    if (!isLikelyDataTableBlock(block)) continue;
+
+    const candidate = findPreviousAttachmentStartCandidate(blocks, i);
+    if (candidate) return candidate;
+
+    return block;
+  }
+
+  /**
+   * Fallback cuối: phụ lục dạng Chương/Điều.
+   */
+  for (let i = scanStart; i < blocks.length; i++) {
     const text = getText(blocks[i]);
 
     if (!text) continue;
@@ -683,7 +1080,7 @@ const removeOldMainDecisionSignatureBeforeAttachment = (
   for (let i = startIndex - 1; i >= from; i--) {
     const text = getText(blocks[i]);
 
-    if (isAttachmentTitleLine(text)) break;
+    if (isLikelyGenericAttachmentTitleBlock(blocks[i])) break;
 
     if (isNoiNhanLine(text)) {
       noiNhanIndex = i;
@@ -701,7 +1098,7 @@ const removeOldMainDecisionSignatureBeforeAttachment = (
     const block = blocks[i];
     const text = getText(block);
 
-    if (isAttachmentTitleLine(text)) break;
+    if (isLikelyGenericAttachmentTitleBlock(block)) break;
 
     toRemove.push(block);
   }
@@ -712,40 +1109,15 @@ const removeOldMainDecisionSignatureBeforeAttachment = (
 };
 
 export const cleanQuyetDinhNTAttachmentHeader = (
-  doc: Document,
-  attachmentStart: Element
+  _doc: Document,
+  _attachmentStart: Element
 ): void => {
-  const body = getBody(doc);
-  if (!body) return;
-
-  const blocks = getDirectBodyBlocks(body);
-  const startIndex = blocks.indexOf(attachmentStart);
-  if (startIndex < 0) return;
-
-  const toRemove: Element[] = [];
-
-  for (let i = startIndex - 1; i >= 0; i--) {
-    const block = blocks[i];
-    const text = getText(block);
-
-    if (isMainDecisionArticleLine(text)) break;
-    if (isMainDecisionCommandLine(text)) break;
-    if (isDecisionLegalBasisLine(text)) break;
-    if (isDecisionAuthorityLine(text)) break;
-    if (isNoiNhanLine(text)) break;
-    if (isSignerLine(text)) break;
-
-    if (isAttachmentHeaderBlock(block)) {
-      toRemove.push(block);
-      continue;
-    }
-
-    if (!isEmptyLine(text)) break;
-  }
-
-  toRemove.forEach(el => {
-    if (el.parentNode) el.parentNode.removeChild(el);
-  });
+  /**
+   * Bản v5: không xóa header hoặc bất kỳ block nào của văn bản ban hành kèm theo.
+   * Chỉ chèn chữ ký/ngắt trang/header mới trước phần kèm theo. Giữ nguyên toàn bộ
+   * nội dung phía sau để tránh mất bảng.
+   */
+  return;
 };
 
 const hardResetParagraphAsSingleRun = (
@@ -785,7 +1157,7 @@ const hardResetParagraphAsSingleRun = (
     contextualSpacing.parentNode.removeChild(contextualSpacing);
   }
 
-  const tabs = Array.from(pPr.getElementsByTagNameNS(W_NS, 'tabs'));
+  const tabs = Array.from(pPr.getElementsByTagNameNS(W_NS, 'tabs')) as Element[];
   tabs.forEach(tab => {
     if (tab.parentNode) tab.parentNode.removeChild(tab);
   });
@@ -889,58 +1261,11 @@ const isShortUnderlineParagraph = (block: Element): boolean => {
   return /^[_\-–—.·]{6,}$/.test(compact);
 };
 
-const removeDecorativeBlocksBetweenAttachmentNoteAndContent = (doc: Document): void => {
-  const body = getBody(doc);
-  if (!body) return;
-
-  const attachmentStart = findQuyetDinhNTAttachmentStart(doc);
-  if (!attachmentStart) return;
-
-  const blocks = getDirectBodyBlocks(body);
-  const startIndex = blocks.indexOf(attachmentStart);
-  if (startIndex < 0) return;
-
-  let noteStarted = false;
-  let noteEnded = false;
-  const toRemove: Element[] = [];
-
-  for (let i = startIndex; i < blocks.length; i++) {
-    const block = blocks[i];
-    const text = getText(block);
-    const raw = normalizeText(text);
-    const local = getLocalName(block);
-
-    if (!noteStarted && isAttachmentNoteStartLine(text)) {
-      noteStarted = true;
-      noteEnded = raw.includes(')');
-      continue;
-    }
-
-    if (noteStarted && !noteEnded) {
-      if (raw.includes(')')) {
-        noteEnded = true;
-      }
-      continue;
-    }
-
-    if (noteStarted && noteEnded) {
-      if (isArticleLine(text) || isChapterLine(text)) {
-        break;
-      }
-
-      if (
-        isEmptyLine(text) ||
-        (isDecorativeLine(text) && !isShortUnderlineParagraph(block)) ||
-        (local === 'tbl' && isEmptyLine(text))
-      ) {
-        toRemove.push(block);
-      }
-    }
-  }
-
-  toRemove.forEach(el => {
-    if (el.parentNode) el.parentNode.removeChild(el);
-  });
+const removeDecorativeBlocksBetweenAttachmentNoteAndContent = (_doc: Document): void => {
+  /**
+   * Bản v5: no-op. Tuyệt đối không removeChild trong vùng văn bản kèm theo.
+   */
+  return;
 };
 
 const normalizeQuyetDinhNTMainHeadingSpacing = (doc: Document): void => {
@@ -985,7 +1310,21 @@ const normalizeQuyetDinhNTMainHeadingSpacing = (doc: Document): void => {
   if (authorityIndex >= 0) {
     const authorityBlock = blocks[authorityIndex];
     if (getLocalName(authorityBlock) === 'p') {
-      setParagraphSpacing(authorityBlock, '360', '0', '240');
+      // Dòng thẩm quyền "HIỆU TRƯỞNG TRƯỜNG ..." luôn cách đoạn trên và đoạn dưới 18pt.
+      setParagraphSpacing(authorityBlock, '360', '360', '240');
+    }
+
+    // Đảm bảo dòng căn cứ đầu tiên không tự cộng thêm khoảng cách ngoài 18pt của dòng thẩm quyền.
+    for (let i = authorityIndex + 1; i < blocks.length; i++) {
+      const nextBlock = blocks[i];
+      const nextText = getText(nextBlock);
+      if (!nextText || getLocalName(nextBlock) !== 'p') continue;
+
+      if (isDecisionLegalBasisLine(nextText)) {
+        setParagraphSpacing(nextBlock, '0', '0', '240');
+      }
+
+      break;
     }
   }
 };
@@ -1023,7 +1362,7 @@ const normalizeAttachmentUnderlineSpacing = (doc: Document): void => {
     }
 
     if (inAttachmentNote && noteEnded) {
-      if (isArticleLine(text) || isChapterLine(text) || isAttachmentTitleLine(text)) {
+      if (isArticleLine(text) || isChapterLine(text) || isLikelyGenericAttachmentTitleBlock(block)) {
         break;
       }
 
@@ -1039,6 +1378,10 @@ const normalizeAttachmentUnderlineSpacing = (doc: Document): void => {
       }
 
       if (getLocalName(block) === 'tbl') {
+        if (isLikelyDataTableBlock(block)) {
+          break;
+        }
+
         setTableLineSpacing(block, '40', '240');
         break;
       }
@@ -1053,10 +1396,10 @@ export const normalizeQuyetDinhNTAttachmentHeadings = (doc: Document): void => {
   let attachmentStart = findQuyetDinhNTAttachmentStart(doc);
   if (!attachmentStart) return;
 
-  removeDecorativeBlocksBetweenAttachmentNoteAndContent(doc);
-
-  attachmentStart = findQuyetDinhNTAttachmentStart(doc);
-  if (!attachmentStart) return;
+  /**
+   * Không xóa bất kỳ block nào trong văn bản ban hành kèm theo.
+   * Chỉ định dạng nhẹ các heading/ghi chú nhận diện được.
+   */
 
   const blocks = getDirectBodyBlocks(body);
   const startIndex = blocks.indexOf(attachmentStart);
@@ -1076,7 +1419,7 @@ export const normalizeQuyetDinhNTAttachmentHeadings = (doc: Document): void => {
       continue;
     }
 
-    if (isAttachmentTitleLine(text)) {
+    if (isLikelyGenericAttachmentTitleBlock(block)) {
       hardResetParagraphAsSingleRun(doc, block, text, {
         bold: true,
         align: 'center',
@@ -1091,13 +1434,10 @@ export const normalizeQuyetDinhNTAttachmentHeadings = (doc: Document): void => {
       continue;
     }
 
-    const startsAttachmentNote =
-      rawText.includes('(') &&
-      normalizeForDetect(rawText).includes('BAN HANH KEM THEO');
-
+    const startsAttachmentNote = isAttachmentNoteStartLine(rawText);
     const endsAttachmentNote = rawText.includes(')');
 
-    if (startsAttachmentNote || inParenthesizedAttachmentNote) {
+    if (startsAttachmentNote || (inParenthesizedAttachmentNote && isAttachmentNoteContinuationLine(rawText))) {
       hardResetParagraphAsSingleRun(doc, block, text, {
         italic: true,
         align: 'center',
@@ -1162,7 +1502,11 @@ export const normalizeQuyetDinhNTAttachmentHeadings = (doc: Document): void => {
   }
 };
 
-const getQuyetDinhNTReceivers = (): string[] => {
+const getQuyetDinhNTReceivers = (options: any): string[] => {
+  if (Array.isArray(options?.receivers) && options.receivers.length > 0) {
+    return options.receivers.map((item: unknown) => String(item || '')).filter(Boolean);
+  }
+
   return [
     '- UBND xã Ea Kar',
     '- Phòng Văn hoá - Xã hội (b/c)',
@@ -1247,7 +1591,7 @@ export const createQuyetDinhNTSignatureBlock = (
     size: 12
   }));
 
-  const receivers = getQuyetDinhNTReceivers();
+  const receivers = getQuyetDinhNTReceivers(options);
 
   receivers.forEach((receiver, index) => {
     tc1.appendChild(createP(doc, normalizeReceiverEnd(receiver, index, receivers.length), {
@@ -1317,6 +1661,79 @@ const insertBeforeSectPrOrAppend = (doc: Document, el: Element): void => {
   }
 };
 
+const getAttachmentInsertionPoint = (
+  doc: Document,
+  attachmentStart: Element
+): Element => {
+  const body = getBody(doc);
+  if (!body) return attachmentStart;
+
+  const blocks = getDirectBodyBlocks(body);
+  const startIndex = blocks.indexOf(attachmentStart);
+  if (startIndex < 0) return attachmentStart;
+
+  /**
+   * Nếu attachmentStart đang là dòng ghi chú "(Ban hành kèm theo...)" thì
+   * điểm chèn đúng phải là dòng đầu tiên của cụm tiêu đề/phụ đề đứng trước nó.
+   * Nếu chèn chữ ký ngay trước dòng ghi chú, tiêu đề phụ lục sẽ bị kẹt lại ở
+   * phần Quyết định chính, và các bước xử lý sau có thể làm mất bảng dữ liệu.
+   */
+  if (isAttachmentNoteStartLine(getText(attachmentStart))) {
+    const headingStart = findAttachmentHeadingGroupStartBeforeNote(blocks, startIndex);
+    if (headingStart) return headingStart;
+  }
+
+  return attachmentStart;
+};
+
+
+const getBodySectPr = (body: Element): Element | null => {
+  const children = Array.from(body.childNodes);
+
+  for (let i = children.length - 1; i >= 0; i--) {
+    const node = children[i];
+    if (node.nodeType !== 1) continue;
+
+    const el = node as Element;
+    if (getLocalName(el) === 'sectPr') return el;
+  }
+
+  return null;
+};
+
+const extractBodyBlocksFrom = (
+  doc: Document,
+  body: Element,
+  start: Element
+): DocumentFragment => {
+  const fragment = doc.createDocumentFragment();
+
+  let node: ChildNode | null = start;
+
+  while (node) {
+    const next = node.nextSibling;
+
+    if (node.nodeType === 1 && getLocalName(node as Element) === 'sectPr') {
+      break;
+    }
+
+    fragment.appendChild(node);
+    node = next;
+  }
+
+  return fragment;
+};
+
+const insertBeforeSectPrOrAppendToBody = (body: Element, node: Node): void => {
+  const sectPr = getBodySectPr(body);
+
+  if (sectPr) {
+    body.insertBefore(node, sectPr);
+  } else {
+    body.appendChild(node);
+  }
+};
+
 export const insertQuyetDinhNTSignatureBlock = (
   doc: Document,
   options: any,
@@ -1327,29 +1744,39 @@ export const insertQuyetDinhNTSignatureBlock = (
   const body = getBody(doc);
   if (!body) return false;
 
-  const initialAttachmentStart = findQuyetDinhNTAttachmentStart(doc);
+  /**
+   * Bản v6: bảo toàn nguyên khối "văn bản ban hành kèm theo".
+   *
+   * Nguyên nhân các bản trước vẫn mất bảng: nếu chỉ insertBefore vào giữa tài liệu,
+   * các bước xử lý/cleaner khác trong pipeline vẫn có thể coi phần phía sau chữ ký
+   * là phần thừa và loại bỏ. Vì vậy bản này làm theo cách an toàn hơn:
+   *
+   * 1. Xác định mốc đầu của văn bản kèm theo.
+   * 2. Tách TOÀN BỘ các block từ mốc đó đến trước sectPr ra DocumentFragment.
+   *    Việc tách này giữ nguyên XML gốc của tiêu đề, ghi chú, bảng, định dạng bảng.
+   * 3. Chèn chữ ký + ngắt trang + header phụ lục.
+   * 4. Gắn nguyên fragment văn bản kèm theo ngay sau header.
+   *
+   * Kết quả: không có removeChild kiểu "dọn rác" nào áp dụng riêng cho bảng;
+   * bảng được di chuyển nguyên khối nên không thể bị xóa do quét thiếu/quét gần.
+   */
+  const detectedAttachmentStart =
+    findAttachmentStartAfterMainDecisionEnding(doc) ||
+    findQuyetDinhNTAttachmentStart(doc);
 
-  if (initialAttachmentStart) {
-    removeOldMainDecisionSignatureBeforeAttachment(doc, initialAttachmentStart);
-
-    const attachmentAfterSignatureClean = findQuyetDinhNTAttachmentStart(doc);
-    if (!attachmentAfterSignatureClean) return false;
-
-    cleanQuyetDinhNTAttachmentHeader(doc, attachmentAfterSignatureClean);
-
-    const attachmentAfterHeaderClean = findQuyetDinhNTAttachmentStart(doc);
-    if (!attachmentAfterHeaderClean) return false;
-
+  if (detectedAttachmentStart) {
+    const attachmentStart = getAttachmentInsertionPoint(doc, detectedAttachmentStart);
     const signatureBlock = createQuyetDinhNTSignatureBlock(doc, options, docType);
     const pageBreakBeforeAttachment = createPageBreakParagraph(doc);
     const attachmentHeader = createQuyetDinhNTAttachmentStandardHeader(doc, options);
 
-    body.insertBefore(signatureBlock, attachmentAfterHeaderClean);
-    body.insertBefore(pageBreakBeforeAttachment, attachmentAfterHeaderClean);
-    body.insertBefore(attachmentHeader, attachmentAfterHeaderClean);
+    const attachmentFragment = extractBodyBlocksFrom(doc, body, attachmentStart);
 
-    normalizeQuyetDinhNTAttachmentHeadings(doc);
-    normalizeAttachmentUnderlineSpacing(doc);
+    insertBeforeSectPrOrAppendToBody(body, signatureBlock);
+    insertBeforeSectPrOrAppendToBody(body, pageBreakBeforeAttachment);
+    insertBeforeSectPrOrAppendToBody(body, attachmentHeader);
+    insertBeforeSectPrOrAppendToBody(body, attachmentFragment);
+
     normalizeQuyetDinhNTMainHeadingSpacing(doc);
 
     return true;

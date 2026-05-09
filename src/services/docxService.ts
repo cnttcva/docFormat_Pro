@@ -117,6 +117,923 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
       setAttr(docGrid, "linePitch", "360");
     };
 
+
+
+    /**
+     * QUYẾT ĐỊNH NHÀ TRƯỜNG CÓ VĂN BẢN BAN HÀNH KÈM THEO
+     * ------------------------------------------------------
+     * Nguyên tắc bảo toàn tuyệt đối:
+     * - Phần chính của Quyết định kết thúc tại điều khoản thi hành/hiệu lực.
+     * - Mọi block nội dung thật phía sau điều khoản đó không thuộc phần chính.
+     * - Tách nguyên khối phần ngoài phần chính ra khỏi document trước khi chạy các
+     *   bước clean/format chung, để không hàm nào có cơ hội xóa bảng/phụ lục.
+     * - Sau khi đã chèn chữ ký Quyết định, gắn nguyên khối này trở lại sau ngắt trang.
+     */
+    const normalizeForSpecialDecisionDetect = (value: string): string => {
+      return String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[Đđ]/g, "D")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+    };
+
+    const getLocalNameForSpecialDecision = (node: Node): string => {
+      const name = (node as Element).localName || node.nodeName || "";
+      return name.includes(":") ? name.split(":").pop() || name : name;
+    };
+
+    const getDirectBodyBlocksForSpecialDecision = (targetBody: Element): Element[] => {
+      return Array.from(targetBody.childNodes).filter(
+        (node): node is Element => node.nodeType === 1
+      );
+    };
+
+    const getBlockTextForSpecialDecision = (node: Node | null | undefined): string => {
+      return String(node?.textContent || "").replace(/\s+/g, " ").trim();
+    };
+
+    const isEmptyOrNonContentBlockForSpecialDecision = (block: Element): boolean => {
+      const localName = getLocalNameForSpecialDecision(block);
+      if (localName === "sectPr") return true;
+
+      const text = getBlockTextForSpecialDecision(block);
+      if (!text) return true;
+
+      const normalized = normalizeForSpecialDecisionDetect(text);
+      if (/^[0-9]{1,3}$/.test(normalized)) return true;
+      if (/^[\s*._\-–—=]+$/.test(text)) return true;
+
+      return false;
+    };
+
+    const isMainDecisionCommandForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return t === "QUYET DINH:" || t === "QUYET DINH";
+    };
+
+    const isArticleLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return /^DIEU\s+\d+[\.:]/.test(t) || /^DIEU\s+\d+\s+/.test(t);
+    };
+
+    const isMainDecisionEndingTextForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+
+      return (
+        t.includes("CAN CU QUYET DINH THI HANH") ||
+        t.includes("CAN CU QUYET DINH NAY THI HANH") ||
+        t.includes("QUYET DINH NAY CO HIEU LUC") ||
+        t.includes("CO HIEU LUC KE TU NGAY KY") ||
+        t.includes("KE TU NGAY KY") ||
+        t.includes("CHIU TRACH NHIEM THI HANH QUYET DINH NAY") ||
+        t.includes("CHIU TRACH NHIEM THI HANH") ||
+        t.includes("QUYET DINH THI HANH") ||
+        t.includes("THI HANH QUYET DINH NAY") ||
+        t.includes("CAN CU QUYET DINH THI HANH")
+      );
+    };
+
+    const isSchoolDecisionForPreserveAttachment = (): boolean => {
+      if (finalOptions.headerType !== HeaderType.SCHOOL) return false;
+
+      const allText = getBlockTextForSpecialDecision(body);
+      const normalized = normalizeForSpecialDecisionDetect(allText);
+
+      return finalOptions.isDecision === true || normalized.includes("QUYET DINH");
+    };
+
+    type PreservedAttachmentBoundaryForSpecialDecision = {
+      ending: Element;
+      start: Element;
+    };
+
+    const isAttachmentNoteForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return t.includes("BAN HANH KEM THEO") && t.includes("QUYET DINH");
+    };
+
+    const isNoiNhanLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return t === "NOI NHAN" || t === "NOI NHAN:" || t.startsWith("NOI NHAN:");
+    };
+
+    const isSignerLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return (
+        t === "HIEU TRUONG" ||
+        t === "PHO HIEU TRUONG" ||
+        t.startsWith("KT.") ||
+        t.startsWith("TM.") ||
+        t.startsWith("T/M ")
+      );
+    };
+
+    const isAdministrativeHeaderBlockForSpecialDecision = (block: Element): boolean => {
+      const t = normalizeForSpecialDecisionDetect(getBlockTextForSpecialDecision(block));
+      if (!t) return false;
+
+      return (
+        t.includes("CONG HOA XA HOI CHU NGHIA VIET NAM") ||
+        t.includes("DOC LAP") && t.includes("TU DO") && t.includes("HANH PHUC") ||
+        t.startsWith("UBND ") ||
+        t.includes("UY BAN NHAN DAN") ||
+        t.startsWith("TRUONG ") ||
+        t.includes("PHONG GIAO DUC") ||
+        t.includes("SO GIAO DUC")
+      );
+    };
+
+    const isDateLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return t.length < 160 && t.includes("NGAY") && t.includes("THANG") && t.includes("NAM");
+    };
+
+    const isLikelyAttachmentTitleForSpecialDecision = (text: string): boolean => {
+      const raw = String(text || "").replace(/\s+/g, " ").trim();
+      const t = normalizeForSpecialDecisionDetect(text);
+      if (!t) return false;
+      if (t.length > 220) return false;
+      if (isArticleLineForSpecialDecision(text)) return false;
+      if (isMainDecisionCommandForSpecialDecision(text)) return false;
+      if (isMainDecisionEndingTextForSpecialDecision(text)) return false;
+      if (isNoiNhanLineForSpecialDecision(text)) return false;
+      if (isSignerLineForSpecialDecision(text)) return false;
+      if (isDateLineForSpecialDecision(text)) return false;
+      if (t.startsWith("V/V") || t.startsWith("VE VIEC")) return false;
+
+      const keywordHit =
+        t.startsWith("QUY CHE") ||
+        t.startsWith("QUY DINH") ||
+        t.startsWith("NOI QUY") ||
+        t.startsWith("DANH SACH") ||
+        t.startsWith("PHU LUC") ||
+        t.startsWith("KE HOACH") ||
+        t.startsWith("THE LE") ||
+        t.startsWith("DANH MUC") ||
+        t.includes("BANG PHAN CONG") ||
+        t.includes("PHAN CONG") ||
+        t.includes("HOI DONG") ||
+        t.includes("LICH") ||
+        t.includes("CHUONG TRINH") ||
+        t.includes("HOC SINH") ||
+        t.includes("CBGVNV");
+
+      if (keywordHit) return true;
+
+      const letters = String(raw || text).replace(/[^A-Za-zÀ-ỹĐđ]/g, "");
+      const isMostlyUppercase = letters.length >= 8 && letters === letters.toUpperCase();
+      return isMostlyUppercase;
+    };
+
+    const isLikelyDataTableForSpecialDecision = (block: Element): boolean => {
+      if (getLocalNameForSpecialDecision(block) !== "tbl") return false;
+      const t = normalizeForSpecialDecisionDetect(getBlockTextForSpecialDecision(block));
+      return (
+        t.includes("HO VA TEN") ||
+        t.includes("CHUC VU") ||
+        t.includes("NHIEM VU") ||
+        t.includes("GHI CHU") ||
+        t.includes("THOI GIAN") ||
+        t.includes("DIA DIEM") ||
+        t.includes("NOI DUNG") ||
+        t.length > 120
+      );
+    };
+
+    const isIgnorableBetweenEndingAndAttachmentForSpecialDecision = (block: Element): boolean => {
+      if (isEmptyOrNonContentBlockForSpecialDecision(block)) return true;
+      const text = getBlockTextForSpecialDecision(block);
+      if (isNoiNhanLineForSpecialDecision(text)) return true;
+      if (isSignerLineForSpecialDecision(text)) return true;
+      if (isAdministrativeHeaderBlockForSpecialDecision(block)) return true;
+      if (isDateLineForSpecialDecision(text)) return true;
+
+      const t = normalizeForSpecialDecisionDetect(text);
+      if (/^-\s*/.test(text) && text.length < 120) return true;
+      if (t.includes("LUU:") || t.startsWith("LUU ")) return true;
+
+      return false;
+    };
+
+    const findHeadingStartBeforeAttachmentNoteForSpecialDecision = (
+      blocks: Element[],
+      noteIndex: number,
+      endingIndex: number
+    ): Element | null => {
+      let candidate: Element | null = null;
+      let skippedSubTitleLines = 0;
+
+      for (let i = noteIndex - 1; i > endingIndex; i--) {
+        const block = blocks[i];
+        const text = getBlockTextForSpecialDecision(block);
+        if (isEmptyOrNonContentBlockForSpecialDecision(block)) continue;
+        if (isNoiNhanLineForSpecialDecision(text) || isSignerLineForSpecialDecision(text)) break;
+        if (isAdministrativeHeaderBlockForSpecialDecision(block)) break;
+        if (isArticleLineForSpecialDecision(text)) break;
+
+        if (isLikelyAttachmentTitleForSpecialDecision(text)) {
+          candidate = block;
+          continue;
+        }
+
+        // Cho phép các dòng phụ đề nằm giữa tiêu đề và dòng ghi chú kèm theo.
+        if (text.length <= 180 && skippedSubTitleLines < 4) {
+          skippedSubTitleLines += 1;
+          continue;
+        }
+
+        break;
+      }
+
+      return candidate;
+    };
+
+    const hasAttachmentEvidenceNearbyForSpecialDecision = (
+      blocks: Element[],
+      startIndex: number,
+      endingIndex: number
+    ): boolean => {
+      const to = Math.min(blocks.length, startIndex + 14);
+      for (let i = startIndex; i < to; i++) {
+        const block = blocks[i];
+        const text = getBlockTextForSpecialDecision(block);
+        if (isAttachmentNoteForSpecialDecision(text)) return true;
+        if (isLikelyDataTableForSpecialDecision(block)) return true;
+        if (i > startIndex && isArticleLineForSpecialDecision(text)) return true;
+
+        if (i > startIndex && isNoiNhanLineForSpecialDecision(text)) return false;
+        if (i > startIndex && isSignerLineForSpecialDecision(text)) return false;
+        if (i > startIndex && isMainDecisionEndingTextForSpecialDecision(text)) return false;
+      }
+
+      // Nếu tiêu đề nằm sau điều kết thúc và trước đó không còn nội dung quyết định,
+      // vẫn chấp nhận để bảo toàn phần ngoài Quyết định chính.
+      return startIndex > endingIndex;
+    };
+
+    const findPreservedAttachmentStartAfterMainDecision = (targetBody: Element): PreservedAttachmentBoundaryForSpecialDecision | null => {
+      if (!isSchoolDecisionForPreserveAttachment()) return null;
+
+      const blocks = getDirectBodyBlocksForSpecialDecision(targetBody);
+      let decisionCommandIndex = -1;
+      let endingArticleIndex = -1;
+
+      for (let i = 0; i < blocks.length; i++) {
+        const text = getBlockTextForSpecialDecision(blocks[i]);
+        if (!text) continue;
+
+        if (decisionCommandIndex < 0 && isMainDecisionCommandForSpecialDecision(text)) {
+          decisionCommandIndex = i;
+          continue;
+        }
+
+        if (
+          decisionCommandIndex >= 0 &&
+          isArticleLineForSpecialDecision(text) &&
+          isMainDecisionEndingTextForSpecialDecision(text)
+        ) {
+          endingArticleIndex = i;
+        }
+      }
+
+      if (endingArticleIndex < 0) return null;
+
+      // Ưu tiên bằng chứng chắc nhất: dòng "(Ban hành kèm theo Quyết định số...)".
+      // Nếu gặp dòng này, quét ngược để lấy cả tiêu đề/phụ đề của văn bản kèm theo.
+      for (let i = endingArticleIndex + 1; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (getLocalNameForSpecialDecision(block) === "sectPr") break;
+        const text = getBlockTextForSpecialDecision(block);
+        if (isAttachmentNoteForSpecialDecision(text)) {
+          const headingStart = findHeadingStartBeforeAttachmentNoteForSpecialDecision(blocks, i, endingArticleIndex);
+          return {
+            ending: blocks[endingArticleIndex],
+            start: headingStart || block
+          };
+        }
+      }
+
+      // Fallback: tìm tiêu đề thực sự của văn bản kèm theo, bỏ qua Nơi nhận/chữ ký/header cũ.
+      for (let i = endingArticleIndex + 1; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (getLocalNameForSpecialDecision(block) === "sectPr") break;
+        const text = getBlockTextForSpecialDecision(block);
+
+        if (isEmptyOrNonContentBlockForSpecialDecision(block)) continue;
+        if (isNoiNhanLineForSpecialDecision(text) || isSignerLineForSpecialDecision(text)) continue;
+        if (isAdministrativeHeaderBlockForSpecialDecision(block)) continue;
+        if (isDateLineForSpecialDecision(text)) continue;
+
+        if (
+          isLikelyAttachmentTitleForSpecialDecision(text) &&
+          hasAttachmentEvidenceNearbyForSpecialDecision(blocks, i, endingArticleIndex)
+        ) {
+          return {
+            ending: blocks[endingArticleIndex],
+            start: block
+          };
+        }
+
+        if (isLikelyDataTableForSpecialDecision(block)) {
+          return {
+            ending: blocks[endingArticleIndex],
+            start: block
+          };
+        }
+      }
+
+      return null;
+    };
+
+    const removeBlocksBetweenMainEndingAndAttachment = (
+      targetBody: Element,
+      endingBlock: Element,
+      attachmentStart: Element
+    ): void => {
+      let current = endingBlock.nextSibling;
+      while (current && current !== attachmentStart) {
+        const next = current.nextSibling;
+        targetBody.removeChild(current);
+        current = next;
+      }
+    };
+
+    const extractPreservedBlocksFrom = (
+      docRef: Document,
+      targetBody: Element,
+      startBlock: Element
+    ): DocumentFragment => {
+      const fragment = docRef.createDocumentFragment();
+      let current: ChildNode | null = startBlock;
+
+      while (current) {
+        const next = current.nextSibling;
+        const isElement = current.nodeType === 1;
+        const localName = isElement ? getLocalNameForSpecialDecision(current) : "";
+
+        if (localName === "sectPr") break;
+
+        fragment.appendChild(current);
+        current = next;
+      }
+
+      return fragment;
+    };
+
+    const insertBeforeSectPrOrAppendToBody = (targetBody: Element, node: Node): void => {
+      const children = Array.from(targetBody.childNodes);
+      const sectPr = children.find(child =>
+        child.nodeType === 1 && getLocalNameForSpecialDecision(child) === "sectPr"
+      );
+
+      if (sectPr) targetBody.insertBefore(node, sectPr);
+      else targetBody.appendChild(node);
+    };
+
+    const createSimpleParagraphForAttachmentHeader = (
+      docRef: Document,
+      text: string,
+      optionsForP: {
+        bold?: boolean;
+        align?: "left" | "center" | "right" | "both";
+        size?: number;
+      } = {}
+    ): Element => {
+      const p = docRef.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(p, "w:pPr");
+
+      const jc = getOrCreate(pPr, "w:jc");
+      setAttr(jc, "val", optionsForP.align || "center");
+
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "0");
+      setAttr(spacing, "after", "0");
+      setAttr(spacing, "line", "240");
+      setAttr(spacing, "lineRule", "auto");
+
+      const r = docRef.createElementNS(W_NS, "w:r");
+      const rPr = getOrCreate(r, "w:rPr");
+
+      const sizeVal = String((optionsForP.size || 13) * 2);
+      const sz = getOrCreate(rPr, "w:sz");
+      setAttr(sz, "val", sizeVal);
+      const szCs = getOrCreate(rPr, "w:szCs");
+      setAttr(szCs, "val", sizeVal);
+
+      if (optionsForP.bold) {
+        forceBoldNode(rPr);
+        forceParagraphBold(pPr);
+      }
+
+      const t = docRef.createElementNS(W_NS, "w:t");
+      t.textContent = text;
+      r.appendChild(t);
+      p.appendChild(r);
+
+      return p;
+    };
+
+    const createPageBreakForPreservedAttachment = (docRef: Document): Element => {
+      const p = docRef.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(p, "w:pPr");
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "0");
+      setAttr(spacing, "after", "0");
+      setAttr(spacing, "line", "240");
+      setAttr(spacing, "lineRule", "auto");
+
+      const r = docRef.createElementNS(W_NS, "w:r");
+      const br = docRef.createElementNS(W_NS, "w:br");
+      setAttr(br, "type", "page");
+      r.appendChild(br);
+      p.appendChild(r);
+      return p;
+    };
+
+
+    const createAttachmentSpacerParagraph = (
+      docRef: Document,
+      afterTwips: string = "240"
+    ): Element => {
+      const p = docRef.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(p, "w:pPr");
+      const jc = getOrCreate(pPr, "w:jc");
+      setAttr(jc, "val", "center");
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "0");
+      setAttr(spacing, "after", afterTwips);
+      setAttr(spacing, "line", "240");
+      setAttr(spacing, "lineRule", "auto");
+      const r = docRef.createElementNS(W_NS, "w:r");
+      const t = docRef.createElementNS(W_NS, "w:t");
+      t.textContent = "";
+      r.appendChild(t);
+      p.appendChild(r);
+      return p;
+    };
+
+    const createSingleTopBorderLineTableForAttachment = (
+      docRef: Document,
+      widthTwips: string,
+      borderSize: string = "6",
+      afterTwips: string = "120"
+    ): Element => {
+      const tbl = docRef.createElementNS(W_NS, "w:tbl");
+      const tblPr = getOrCreate(tbl, "w:tblPr");
+
+      const jcTbl = getOrCreate(tblPr, "w:jc");
+      setAttr(jcTbl, "val", "center");
+
+      const tblBorders = getOrCreate(tblPr, "w:tblBorders");
+      ["top", "left", "bottom", "right", "insideH", "insideV"].forEach(side => {
+        const border = getOrCreate(tblBorders, `w:${side}`);
+        setAttr(border, "val", "none");
+      });
+
+      const tblW = getOrCreate(tblPr, "w:tblW");
+      setAttr(tblW, "w", widthTwips);
+      setAttr(tblW, "type", "dxa");
+
+      const tblLayout = getOrCreate(tblPr, "w:tblLayout");
+      setAttr(tblLayout, "type", "fixed");
+
+      const tblGrid = getOrCreate(tbl, "w:tblGrid");
+      const gridCol = docRef.createElementNS(W_NS, "w:gridCol");
+      setAttr(gridCol, "w", widthTwips);
+      tblGrid.appendChild(gridCol);
+
+      const tr = docRef.createElementNS(W_NS, "w:tr");
+      tbl.appendChild(tr);
+
+      const tc = docRef.createElementNS(W_NS, "w:tc");
+      tr.appendChild(tc);
+
+      const tcPr = getOrCreate(tc, "w:tcPr");
+      const tcW = getOrCreate(tcPr, "w:tcW");
+      setAttr(tcW, "w", widthTwips);
+      setAttr(tcW, "type", "dxa");
+
+      const tcMar = getOrCreate(tcPr, "w:tcMar");
+      ["top", "bottom", "left", "right"].forEach(side => {
+        const mar = getOrCreate(tcMar, `w:${side}`);
+        setAttr(mar, "w", "0");
+        setAttr(mar, "type", "dxa");
+      });
+
+      const tcBorders = getOrCreate(tcPr, "w:tcBorders");
+      const top = getOrCreate(tcBorders, "w:top");
+      setAttr(top, "val", "single");
+      setAttr(top, "sz", borderSize);
+      setAttr(top, "space", "0");
+      setAttr(top, "color", "000000");
+
+      const p = docRef.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(p, "w:pPr");
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "0");
+      setAttr(spacing, "after", afterTwips);
+      setAttr(spacing, "line", "2");
+      setAttr(spacing, "lineRule", "exact");
+      tc.appendChild(p);
+
+      return tbl;
+    };
+
+    const isAttachmentNoteStartLineForPreservedDecision = (text: string): boolean => {
+      const raw = String(text || "").trim();
+      const t = normalizeForSpecialDecisionDetect(raw);
+      return raw.includes("(") && t.includes("BAN HANH KEM THEO") && t.includes("QUYET DINH");
+    };
+
+    const isAttachmentNoteContinuationLineForPreservedDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return (
+        t.includes("QUYET DINH SO") ||
+        t.includes("NGAY") ||
+        t.includes("THANG") ||
+        t.includes("NAM") ||
+        t.includes("CUA HIEU TRUONG") ||
+        t.includes("CUA NHA TRUONG") ||
+        t.includes("TRUONG THCS") ||
+        t.includes("TRUONG")
+      );
+    };
+
+    const isSingleTopBorderDecorationTableForAttachment = (node: Node | null): boolean => {
+      if (!node || node.nodeType !== 1) return false;
+      const el = node as Element;
+      const local = (el.localName || el.nodeName || "").replace(/^w:/, "").toLowerCase();
+      if (local !== "tbl") return false;
+      const text = (el.textContent || "").trim();
+      if (text.length > 0) return false;
+      const tcBorders = Array.from(el.getElementsByTagNameNS(W_NS, "tcBorders"));
+      return tcBorders.some(tcBorder => {
+        const top = tcBorder.getElementsByTagNameNS(W_NS, "top")[0];
+        return !!top && (top.getAttribute("w:val") === "single" || top.getAttributeNS(W_NS, "val") === "single");
+      });
+    };
+
+    const decoratePreservedAttachmentFragmentLeadIn = (
+      docRef: Document,
+      fragment: DocumentFragment
+    ): void => {
+      const children = Array.from(fragment.childNodes).filter(node => node.nodeType === 1) as Element[];
+      if (children.length === 0) return;
+
+      let titleIndex = -1;
+      for (let i = 0; i < children.length; i++) {
+        const el = children[i];
+        const local = (el.localName || el.nodeName || "").replace(/^w:/, "").toLowerCase();
+        if (local !== "p") continue;
+        const text = getBlockTextForSpecialDecision(el).trim();
+        if (!text) continue;
+        if (isAttachmentNoteStartLineForPreservedDecision(text)) continue;
+        titleIndex = i;
+        break;
+      }
+
+      if (titleIndex < 0) return;
+
+      let noteStart = -1;
+      let noteEnd = -1;
+      for (let i = titleIndex + 1; i < Math.min(children.length, titleIndex + 8); i++) {
+        const el = children[i];
+        const local = (el.localName || el.nodeName || "").replace(/^w:/, "").toLowerCase();
+        if (local !== "p") {
+          if (noteStart >= 0) break;
+          continue;
+        }
+        const text = getBlockTextForSpecialDecision(el).trim();
+        if (!text) {
+          if (noteStart >= 0) break;
+          continue;
+        }
+        if (noteStart < 0) {
+          if (isAttachmentNoteStartLineForPreservedDecision(text)) {
+            noteStart = i;
+            noteEnd = i;
+            if (text.includes(")")) break;
+          } else {
+            // Nếu đã qua các dòng đầu mà vẫn chưa gặp note thì dừng.
+            if (i > titleIndex + 3) break;
+          }
+        } else {
+          if (isAttachmentNoteContinuationLineForPreservedDecision(text)) {
+            noteEnd = i;
+            if (text.includes(")")) break;
+          } else {
+            break;
+          }
+        }
+      }
+
+      if (noteStart < 0 || noteEnd < 0) return;
+
+      const nextNode = children[noteEnd + 1] || null;
+      if (isSingleTopBorderDecorationTableForAttachment(nextNode)) {
+        return;
+      }
+
+      const lineTbl = createSingleTopBorderLineTableForAttachment(docRef, "3200", "6", "120");
+      if (nextNode) fragment.insertBefore(lineTbl, nextNode);
+      else fragment.appendChild(lineTbl);
+    };
+
+    const getParagraphTextsForSpecialDecision = (root: Element): string[] => {
+      const paragraphs = Array.from(root.getElementsByTagNameNS(W_NS, "p"));
+      return paragraphs
+        .map(pNode => getBlockTextForSpecialDecision(pNode))
+        .filter(text => text.length > 0);
+    };
+
+    const getSchoolTypePrefixForAttachmentHeader = (orgName: string): string | null => {
+      const normalized = normalizeForSpecialDecisionDetect(orgName);
+
+      const prefixes = [
+        "TRUONG THCS VA THPT",
+        "TRUONG THPT",
+        "TRUONG THCS",
+        "TRUONG TIEU HOC VA THCS",
+        "TRUONG TIEU HOC",
+        "TRUONG TH",
+        "TRUONG MN",
+        "TRUONG MAM NON",
+        "TRUONG"
+      ];
+
+      for (const prefix of prefixes) {
+        if (normalized.startsWith(prefix + " ")) {
+          return prefix
+            .replace("TRUONG", "TRƯỜNG")
+            .replace("TIEU HOC", "TIỂU HỌC")
+            .replace("MAM NON", "MẦM NON");
+        }
+      }
+
+      return null;
+    };
+
+    const smartSplitOrgNameForAttachmentHeader = (orgName: string): string[] => {
+      const clean = String(orgName || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+
+      if (!clean) return [];
+
+      // Với tên trường ngắn/vừa, giữ một dòng để đẹp hơn.
+      // Ví dụ: "TRƯỜNG THCS CHU VĂN AN".
+      if (clean.length <= 28) {
+        return [clean];
+      }
+
+      const prefix = getSchoolTypePrefixForAttachmentHeader(clean);
+      if (!prefix) {
+        return [clean];
+      }
+
+      const normalized = normalizeForSpecialDecisionDetect(clean);
+      const normalizedPrefix = normalizeForSpecialDecisionDetect(prefix);
+      const prefixWords = normalizedPrefix.split(" ").length;
+      const originalWords = clean.split(/\s+/);
+      const rest = originalWords.slice(prefixWords).join(" ").trim();
+
+      if (!rest) return [clean];
+
+      // Ngắt dòng thông minh: dòng 1 là loại trường, dòng 2 là cụm tên trường.
+      return [prefix, rest];
+    };
+
+    const extractMainHeaderInfoForAttachment = (targetBody: Element | null): {
+      governingBody: string;
+      orgName: string;
+      nationalHeader: string;
+      motto: string;
+    } => {
+      const org = (finalOptions as any)?.orgInfo || {};
+      const fallback = {
+        governingBody: String(org.governingBody || "UBND XÃ EA KAR").toUpperCase(),
+        orgName: String(org.orgName || "TRƯỜNG THCS CHU VĂN AN").toUpperCase(),
+        nationalHeader: "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM",
+        motto: "Độc lập - Tự do - Hạnh phúc"
+      };
+
+      if (!targetBody) return fallback;
+
+      const topBlocks = getDirectBodyBlocksForSpecialDecision(targetBody).slice(0, 12);
+      for (const block of topBlocks) {
+        if (getLocalNameForSpecialDecision(block) !== "tbl") continue;
+
+        const tableText = normalizeForSpecialDecisionDetect(getBlockTextForSpecialDecision(block));
+        if (!tableText.includes("CONG HOA XA HOI CHU NGHIA VIET NAM")) continue;
+
+        const rows = Array.from(block.getElementsByTagNameNS(W_NS, "tr"));
+        for (const row of rows) {
+          const cells = Array.from(row.getElementsByTagNameNS(W_NS, "tc"));
+          if (cells.length < 2) continue;
+
+          let leftTexts = getParagraphTextsForSpecialDecision(cells[0]);
+          let rightTexts = getParagraphTextsForSpecialDecision(cells[1]);
+
+          const leftNormalized = normalizeForSpecialDecisionDetect(leftTexts.join(" "));
+          const rightNormalized = normalizeForSpecialDecisionDetect(rightTexts.join(" "));
+
+          // Một số mẫu có thể đảo cột; nhận theo nội dung quốc hiệu.
+          if (leftNormalized.includes("CONG HOA XA HOI CHU NGHIA VIET NAM")) {
+            const tmp = leftTexts;
+            leftTexts = rightTexts;
+            rightTexts = tmp;
+          } else if (!rightNormalized.includes("CONG HOA XA HOI CHU NGHIA VIET NAM")) {
+            continue;
+          }
+
+          const nationalHeader =
+            rightTexts.find(text => normalizeForSpecialDecisionDetect(text).includes("CONG HOA XA HOI CHU NGHIA VIET NAM")) ||
+            fallback.nationalHeader;
+
+          const motto =
+            rightTexts.find(text => {
+              const t = normalizeForSpecialDecisionDetect(text);
+              return t.includes("DOC LAP") && t.includes("TU DO") && t.includes("HANH PHUC");
+            }) || fallback.motto;
+
+          const cleanLeftTexts = leftTexts.filter(text => {
+            const t = normalizeForSpecialDecisionDetect(text);
+            return !t.startsWith("SO:") && !isDateLineForSpecialDecision(text);
+          });
+
+          return {
+            governingBody: (cleanLeftTexts[0] || fallback.governingBody).toUpperCase(),
+            orgName: (cleanLeftTexts[1] || fallback.orgName).toUpperCase(),
+            nationalHeader,
+            motto
+          };
+        }
+      }
+
+      return fallback;
+    };
+
+    const isSchoolDecisionAuthorityLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return (
+        t.startsWith("HIEU TRUONG TRUONG") ||
+        t.startsWith("HIEU TRUONG") ||
+        t.startsWith("PHO HIEU TRUONG") ||
+        t.startsWith("GIAI DOC") ||
+        t.startsWith("CHU TICH")
+      );
+    };
+
+    const isDecisionLegalBasisLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return (
+        t.startsWith("CAN CU") ||
+        t.startsWith("XET") ||
+        t.startsWith("THEO") ||
+        t.startsWith("THUC HIEN")
+      );
+    };
+
+    const applyMainDecisionAuthoritySpacingForSpecialDecision = (targetBody: Element | null): void => {
+      if (!targetBody) return;
+
+      const blocks = getDirectBodyBlocksForSpecialDecision(targetBody);
+      let commandIndex = -1;
+
+      for (let i = 0; i < blocks.length; i++) {
+        const text = getBlockTextForSpecialDecision(blocks[i]);
+        const t = normalizeForSpecialDecisionDetect(text);
+        if (t === "QUYET DINH:" || t === "QUYET DINH") {
+          commandIndex = i;
+        }
+
+        if (commandIndex >= 0 && isSchoolDecisionAuthorityLineForSpecialDecision(text)) {
+          const pPr = getOrCreate(blocks[i], "w:pPr");
+          const spacing = getOrCreate(pPr, "w:spacing");
+          setAttr(spacing, "before", "360");
+          setAttr(spacing, "after", "360");
+          setAttr(spacing, "line", "240");
+          setAttr(spacing, "lineRule", "auto");
+
+          for (let j = i + 1; j < blocks.length; j++) {
+            const nextText = getBlockTextForSpecialDecision(blocks[j]);
+            if (!nextText) continue;
+
+            if (isDecisionLegalBasisLineForSpecialDecision(nextText)) {
+              const nextPPr = getOrCreate(blocks[j], "w:pPr");
+              const nextSpacing = getOrCreate(nextPPr, "w:spacing");
+              setAttr(nextSpacing, "before", "0");
+              setAttr(nextSpacing, "after", "0");
+              setAttr(nextSpacing, "line", "240");
+              setAttr(nextSpacing, "lineRule", "auto");
+            }
+
+            break;
+          }
+
+          break;
+        }
+      }
+    };
+
+    const createAttachmentHeaderForPreservedDecision = (docRef: Document, targetBody: Element | null): Node => {
+      const fragment = docRef.createDocumentFragment();
+      const headerInfo = extractMainHeaderInfoForAttachment(targetBody);
+
+      const tbl = docRef.createElementNS(W_NS, "w:tbl");
+      const tblPr = getOrCreate(tbl, "w:tblPr");
+      const tblBorders = getOrCreate(tblPr, "w:tblBorders");
+      ["top", "left", "bottom", "right", "insideH", "insideV"].forEach(side => {
+        const border = getOrCreate(tblBorders, `w:${side}`);
+        setAttr(border, "val", "none");
+      });
+
+      const tblLayout = getOrCreate(tblPr, "w:tblLayout");
+      setAttr(tblLayout, "type", "fixed");
+      const tblW = getOrCreate(tblPr, "w:tblW");
+      setAttr(tblW, "w", "9350");
+      setAttr(tblW, "type", "dxa");
+
+      const tblGrid = getOrCreate(tbl, "w:tblGrid");
+      const col1 = docRef.createElementNS(W_NS, "w:gridCol");
+      setAttr(col1, "w", "3800");
+      tblGrid.appendChild(col1);
+      const col2 = docRef.createElementNS(W_NS, "w:gridCol");
+      setAttr(col2, "w", "5550");
+      tblGrid.appendChild(col2);
+
+      const tr = docRef.createElementNS(W_NS, "w:tr");
+      tbl.appendChild(tr);
+
+      const createCell = (width: string, noWrap: boolean = false): Element => {
+        const tc = docRef.createElementNS(W_NS, "w:tc");
+        const tcPr = getOrCreate(tc, "w:tcPr");
+        const tcW = getOrCreate(tcPr, "w:tcW");
+        setAttr(tcW, "w", width);
+        setAttr(tcW, "type", "dxa");
+
+        const tcMar = getOrCreate(tcPr, "w:tcMar");
+        ["top", "bottom", "left", "right"].forEach(side => {
+          const mar = getOrCreate(tcMar, `w:${side}`);
+          setAttr(mar, "w", "0");
+          setAttr(mar, "type", "dxa");
+        });
+
+        if (noWrap) {
+          getOrCreate(tcPr, "w:noWrap");
+        }
+
+        return tc;
+      };
+
+      const leftCell = createCell("3800");
+      // Quốc hiệu phải nằm trên một dòng, nên bật noWrap cho ô bên phải.
+      const rightCell = createCell("5550", true);
+      tr.appendChild(leftCell);
+      tr.appendChild(rightCell);
+
+      leftCell.appendChild(createSimpleParagraphForAttachmentHeader(docRef, headerInfo.governingBody, { bold: false, size: 12 }));
+
+      const orgNameLines = smartSplitOrgNameForAttachmentHeader(headerInfo.orgName);
+      orgNameLines.forEach(line => {
+        leftCell.appendChild(createSimpleParagraphForAttachmentHeader(docRef, line, { bold: true, size: 12 }));
+      });
+      leftCell.appendChild(createSingleTopBorderLineTableForAttachment(docRef, "1000", "4", "0"));
+
+      // Giảm cỡ chữ quốc hiệu còn 12pt và noWrap ở ô phải để luôn giữ một dòng.
+      rightCell.appendChild(createSimpleParagraphForAttachmentHeader(docRef, headerInfo.nationalHeader, { bold: true, size: 12 }));
+      rightCell.appendChild(createSimpleParagraphForAttachmentHeader(docRef, headerInfo.motto, { bold: true, size: 12 }));
+      rightCell.appendChild(createSingleTopBorderLineTableForAttachment(docRef, "3200", "6", "0"));
+
+      fragment.appendChild(tbl);
+      return fragment;
+    };
+
+    const preservedAttachmentBoundary = body
+      ? findPreservedAttachmentStartAfterMainDecision(body)
+      : null;
+
+    if (preservedAttachmentBoundary) {
+      // Xóa vùng chữ ký/Nơi nhận/header cũ nằm giữa Điều kết thúc và văn bản kèm theo.
+      // Phần này thuộc Quyết định chính cũ, không thuộc văn bản ban hành kèm theo.
+      removeBlocksBetweenMainEndingAndAttachment(
+        body,
+        preservedAttachmentBoundary.ending,
+        preservedAttachmentBoundary.start
+      );
+    }
+
+    const preservedAttachmentFragment = preservedAttachmentBoundary
+      ? extractPreservedBlocksFrom(doc, body, preservedAttachmentBoundary.start)
+      : null;
+
+    if (preservedAttachmentFragment) {
+      logs.push("QuyetDinhNT: extracted and protected only the attached document content after the main decision ending article");
+    }
+
     extractReceivers(doc, finalOptions);
     trimParagraphs(doc);
     cleanHeader(doc, finalOptions.headerType);
@@ -1518,6 +2435,21 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
         setAttr(newHdrRef, "type", "default");
         newHdrRef.setAttribute("r:id", "rIdCustomHdr");
         sPr.appendChild(newHdrRef);
+    }
+
+
+
+    if (preservedAttachmentFragment) {
+      decoratePreservedAttachmentFragmentLeadIn(doc, preservedAttachmentFragment);
+      insertBeforeSectPrOrAppendToBody(body, createPageBreakForPreservedAttachment(doc));
+      insertBeforeSectPrOrAppendToBody(body, createAttachmentHeaderForPreservedDecision(doc, body));
+      insertBeforeSectPrOrAppendToBody(body, createAttachmentSpacerParagraph(doc, "240"));
+      insertBeforeSectPrOrAppendToBody(body, preservedAttachmentFragment);
+      logs.push("QuyetDinhNT: restored protected attached document/tables after signature");
+    }
+
+    if (finalOptions.headerType === HeaderType.SCHOOL && finalOptions.isDecision === true) {
+      applyMainDecisionAuthoritySpacingForSpecialDecision(body);
     }
 
     forceFinalPageMargins(doc, finalOptions);
