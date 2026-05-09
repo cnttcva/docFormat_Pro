@@ -741,6 +741,226 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
       else fragment.appendChild(lineTbl);
     };
 
+
+    const isParagraphReallyEmptyForPreservedAttachment = (p: Element): boolean => {
+      const text = getBlockTextForSpecialDecision(p).replace(/[\s\u00A0\u200B-\u200D\uFEFF]+/g, "");
+      if (text.length > 0) return false;
+      if (p.getElementsByTagNameNS(W_NS, "drawing").length > 0) return false;
+      if (p.getElementsByTagNameNS(W_NS, "pict").length > 0) return false;
+      if (p.getElementsByTagNameNS(W_NS, "object").length > 0) return false;
+      if (p.getElementsByTagNameNS(W_NS, "sectPr").length > 0) return false;
+
+      const brs = Array.from(p.getElementsByTagNameNS(W_NS, "br"));
+      for (const br of brs) {
+        const brType = br.getAttribute("w:type") || br.getAttributeNS(W_NS, "type");
+        if (brType === "page") return false;
+      }
+
+      return true;
+    };
+
+    const hasAncestorTableForPreservedAttachment = (node: Node): boolean => {
+      let current: Node | null = node.parentNode;
+      while (current && current.nodeType === 1) {
+        const local = getLocalNameForSpecialDecision(current);
+        if (local === "tbl") return true;
+        current = current.parentNode;
+      }
+      return false;
+    };
+
+    const isPreservedAttachmentHeadingText = (text: string): boolean => {
+      const raw = String(text || "").trim();
+      const t = normalizeForSpecialDecisionDetect(raw);
+      if (!raw) return false;
+      if (/^PHU LUC\s*\d*/.test(t)) return true;
+      if (/^[IVXLCDM]+\./.test(t)) return true;
+      if (/^[A-Z]\./.test(t) && raw.length < 120) return true;
+      if (t === "QUY CHE" || t === "NOI QUY" || t === "QUY DINH" || t === "DANH SACH") return true;
+
+      const letters = raw.replace(/[^A-Za-zÀ-ỹĐđ]/g, "");
+      return letters.length >= 8 && letters === letters.toUpperCase() && raw.length <= 180;
+    };
+
+    const setPreservedParagraphRunStyle = (
+      p: Element,
+      fontSizeHalfPoints: number,
+      bold?: boolean,
+      italic?: boolean
+    ): void => {
+      const runs = getNodes(p, "r");
+      for (const r of runs) {
+        const rPr = getOrCreate(r, "w:rPr");
+        const rFonts = getOrCreate(rPr, "w:rFonts");
+        setAttr(rFonts, "ascii", finalOptions.font.family);
+        setAttr(rFonts, "hAnsi", finalOptions.font.family);
+        setAttr(rFonts, "cs", finalOptions.font.family);
+        setAttr(rFonts, "eastAsia", finalOptions.font.family);
+
+        const sz = getOrCreate(rPr, "w:sz");
+        setAttr(sz, "val", String(fontSizeHalfPoints));
+        const szCs = getOrCreate(rPr, "w:szCs");
+        setAttr(szCs, "val", String(fontSizeHalfPoints));
+
+        if (bold === true) {
+          const b = getOrCreate(rPr, "w:b");
+          setAttr(b, "val", "1");
+          const bCs = getOrCreate(rPr, "w:bCs");
+          setAttr(bCs, "val", "1");
+        } else if (bold === false) {
+          Array.from(rPr.getElementsByTagNameNS(W_NS, "b")).forEach(n => n.parentNode?.removeChild(n));
+          Array.from(rPr.getElementsByTagNameNS(W_NS, "bCs")).forEach(n => n.parentNode?.removeChild(n));
+        }
+
+        if (italic === true) {
+          const i = getOrCreate(rPr, "w:i");
+          setAttr(i, "val", "1");
+          const iCs = getOrCreate(rPr, "w:iCs");
+          setAttr(iCs, "val", "1");
+        } else if (italic === false) {
+          Array.from(rPr.getElementsByTagNameNS(W_NS, "i")).forEach(n => n.parentNode?.removeChild(n));
+          Array.from(rPr.getElementsByTagNameNS(W_NS, "iCs")).forEach(n => n.parentNode?.removeChild(n));
+        }
+      }
+    };
+
+    const applyPreservedParagraphLayout = (
+      p: Element,
+      options: {
+        align: "left" | "center" | "right" | "both";
+        before: string;
+        after: string;
+        line: string;
+        firstLine?: string;
+        bold?: boolean;
+        italic?: boolean;
+        fontSizeHalfPoints: number;
+      }
+    ): void => {
+      const pPr = getOrCreate(p, "w:pPr");
+      const jc = getOrCreate(pPr, "w:jc");
+      setAttr(jc, "val", options.align);
+
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", options.before);
+      setAttr(spacing, "after", options.after);
+      setAttr(spacing, "line", options.line);
+      setAttr(spacing, "lineRule", "auto");
+
+      const ind = getOrCreate(pPr, "w:ind");
+      setAttr(ind, "left", "0");
+      setAttr(ind, "right", "0");
+      if (options.firstLine) {
+        setAttr(ind, "firstLine", options.firstLine);
+      } else {
+        ind.removeAttributeNS(W_NS, "firstLine");
+        ind.removeAttribute("w:firstLine");
+      }
+      ind.removeAttributeNS(W_NS, "hanging");
+      ind.removeAttribute("w:hanging");
+
+      setPreservedParagraphRunStyle(p, options.fontSizeHalfPoints, options.bold, options.italic);
+    };
+
+    const normalizePreservedAttachmentTablesSafely = (fragment: DocumentFragment): void => {
+      const tables = Array.from((fragment as any).querySelectorAll ? (fragment as any).querySelectorAll("tbl, w\\:tbl") : []) as Element[];
+      const fallbackTables = tables.length > 0 ? tables : Array.from(fragment.childNodes)
+        .filter(node => node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "tbl") as Element[];
+
+      for (const tbl of fallbackTables) {
+        // Không can thiệp vào bảng 1 ô dùng làm đường kẻ chân.
+        if (isSingleTopBorderDecorationTableForAttachment(tbl)) continue;
+
+        const paragraphs = Array.from(tbl.getElementsByTagNameNS(W_NS, "p"));
+        for (const p of paragraphs) {
+          const pPr = getOrCreate(p, "w:pPr");
+          const spacing = getOrCreate(pPr, "w:spacing");
+          setAttr(spacing, "before", "0");
+          setAttr(spacing, "after", "0");
+          setAttr(spacing, "line", String(Math.round(finalOptions.paragraph.lineSpacing * 240)));
+          setAttr(spacing, "lineRule", "auto");
+
+          const ind = getOrCreate(pPr, "w:ind");
+          ind.removeAttributeNS(W_NS, "firstLine");
+          ind.removeAttribute("w:firstLine");
+          ind.removeAttributeNS(W_NS, "hanging");
+          ind.removeAttribute("w:hanging");
+
+          setPreservedParagraphRunStyle(p, finalOptions.font.sizeTable * 2);
+        }
+      }
+    };
+
+    const formatPreservedAttachmentFragmentSafely = (fragment: DocumentFragment): void => {
+      // 1) Xóa tất cả paragraph rỗng cấp thân văn bản trong phần được bảo vệ.
+      //    Không xóa bảng, không xóa paragraph chứa page break/drawing/sectPr.
+      const directChildren = Array.from(fragment.childNodes);
+      for (const node of directChildren) {
+        if (node.nodeType !== 1) continue;
+        const el = node as Element;
+        if (getLocalNameForSpecialDecision(el) === "p" && isParagraphReallyEmptyForPreservedAttachment(el)) {
+          el.parentNode?.removeChild(el);
+        }
+      }
+
+      // 2) Áp dụng lại các thông số đoạn văn đã quy định trong UI/code
+      //    cho phần văn bản ban hành kèm theo, nhưng vẫn bảo toàn nội dung và bảng.
+      const lineTwips = String(Math.round(finalOptions.paragraph.lineSpacing * 240));
+      const afterTwips = String(Math.round(finalOptions.paragraph.after * TWIPS_PER_PT));
+      const firstLineTwips = String(Math.round(finalOptions.paragraph.indent * TWIPS_PER_CM));
+      const normalSize = finalOptions.font.sizeNormal * 2;
+
+      const bodyLevelParagraphs = Array.from(fragment.childNodes)
+        .filter(node => node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "p") as Element[];
+
+      let passedAttachmentNote = false;
+
+      for (const p of bodyLevelParagraphs) {
+        const text = getBlockTextForSpecialDecision(p).trim();
+        if (!text) continue;
+
+        if (isAttachmentNoteStartLineForPreservedDecision(text) || isAttachmentNoteContinuationLineForPreservedDecision(text) && !passedAttachmentNote) {
+          applyPreservedParagraphLayout(p, {
+            align: "center",
+            before: "0",
+            after: "80",
+            line: lineTwips,
+            fontSizeHalfPoints: normalSize,
+            bold: false,
+            italic: true
+          });
+          if (text.includes(")")) passedAttachmentNote = true;
+          continue;
+        }
+
+        if (isPreservedAttachmentHeadingText(text)) {
+          applyPreservedParagraphLayout(p, {
+            align: "center",
+            before: passedAttachmentNote ? "240" : "0",
+            after: "120",
+            line: lineTwips,
+            fontSizeHalfPoints: normalSize,
+            bold: true,
+            italic: false
+          });
+          continue;
+        }
+
+        applyPreservedParagraphLayout(p, {
+          align: "both",
+          before: "0",
+          after: afterTwips,
+          line: lineTwips,
+          firstLine: firstLineTwips,
+          fontSizeHalfPoints: normalSize,
+          bold: undefined,
+          italic: undefined
+        });
+      }
+
+      normalizePreservedAttachmentTablesSafely(fragment);
+    };
+
     const getParagraphTextsForSpecialDecision = (root: Element): string[] => {
       const paragraphs = Array.from(root.getElementsByTagNameNS(W_NS, "p"));
       return paragraphs
@@ -2441,11 +2661,12 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
 
     if (preservedAttachmentFragment) {
       decoratePreservedAttachmentFragmentLeadIn(doc, preservedAttachmentFragment);
+      formatPreservedAttachmentFragmentSafely(preservedAttachmentFragment);
       insertBeforeSectPrOrAppendToBody(body, createPageBreakForPreservedAttachment(doc));
       insertBeforeSectPrOrAppendToBody(body, createAttachmentHeaderForPreservedDecision(doc, body));
       insertBeforeSectPrOrAppendToBody(body, createAttachmentSpacerParagraph(doc, "240"));
       insertBeforeSectPrOrAppendToBody(body, preservedAttachmentFragment);
-      logs.push("QuyetDinhNT: restored protected attached document/tables after signature");
+      logs.push("QuyetDinhNT: restored and safely formatted protected attached document/tables after signature");
     }
 
     if (finalOptions.headerType === HeaderType.SCHOOL && finalOptions.isDecision === true) {
