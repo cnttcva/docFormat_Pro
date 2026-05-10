@@ -1502,17 +1502,60 @@ export const normalizeQuyetDinhNTAttachmentHeadings = (doc: Document): void => {
   }
 };
 
-const getQuyetDinhNTReceivers = (options: any): string[] => {
+const getMainDecisionExecutionArticleNumber = (doc: Document): string => {
+  const body = getBody(doc);
+  if (!body) return '3';
+
+  const blocks = getDirectBodyBlocks(body);
+  let decisionCommandSeen = false;
+  let lastArticleNumber = '3';
+
+  for (const block of blocks) {
+    const text = getText(block);
+    if (!text) continue;
+
+    if (isMainDecisionCommandLine(text)) {
+      decisionCommandSeen = true;
+      continue;
+    }
+
+    if (!decisionCommandSeen) continue;
+
+    if (isNoiNhanLine(text) || isSignerLine(text)) break;
+    if (isAttachmentTitleLine(text) || isAttachmentNoteStartLine(text)) break;
+
+    const normalized = normalizeForDetect(text);
+    const articleMatch = normalized.match(/^DIEU\s+(\d+)/);
+
+    if (articleMatch?.[1]) {
+      lastArticleNumber = articleMatch[1];
+    }
+
+    if (
+      isMainDecisionEndingText(text) ||
+      normalized.includes('CAN CU QUYET DINH THI HANH') ||
+      normalized.includes('CHIU TRACH NHIEM THI HANH') ||
+      normalized.includes('QUYET DINH NAY CO HIEU LUC')
+    ) {
+      return articleMatch?.[1] || lastArticleNumber;
+    }
+  }
+
+  return lastArticleNumber;
+};
+
+const getQuyetDinhNTReceivers = (options: any, doc: Document): string[] => {
   if (Array.isArray(options?.receivers) && options.receivers.length > 0) {
     return options.receivers.map((item: unknown) => String(item || '')).filter(Boolean);
   }
 
+  const executionArticleNumber = getMainDecisionExecutionArticleNumber(doc);
+
   return [
-    '- UBND xã Ea Kar',
-    '- Phòng Văn hoá - Xã hội (b/c)',
-    '- Lãnh đạo trường',
-    '- Các Tổ chuyên môn',
-    '- Các bộ phận liên quan',
+    '- Cấp ủy chi bộ (b/c)',
+    `- Như Điều ${executionArticleNumber} (t/h)`,
+    '- Các tổ chuyên môn',
+    '- Các tổ chức Đoàn thể',
     '- Lưu: VT'
   ];
 };
@@ -1591,7 +1634,7 @@ export const createQuyetDinhNTSignatureBlock = (
     size: 12
   }));
 
-  const receivers = getQuyetDinhNTReceivers(options);
+  const receivers = getQuyetDinhNTReceivers(options, doc);
 
   receivers.forEach((receiver, index) => {
     tc1.appendChild(createP(doc, normalizeReceiverEnd(receiver, index, receivers.length), {

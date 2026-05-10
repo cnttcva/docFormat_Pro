@@ -535,23 +535,438 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
       return p;
     };
 
-    const createPageBreakForPreservedAttachment = (docRef: Document): Element => {
+    /**
+     * Tạo ngắt SECTION trước phần “Văn bản ban hành kèm theo”.
+     *
+     * Không dùng w:br type="page" ở đây, vì nếu phần kèm theo có bảng/trang
+     * ngang thì Word sẽ áp sectPr landscape nằm cuối phần kèm theo cho toàn bộ
+     * phần trước nó. Section break portrait này chốt phần Quyết định chính ở
+     * khổ dọc, sau đó section kế tiếp mới nhận orientation riêng của phần kèm theo.
+     */
+    const createPortraitSectionBreakBeforePreservedAttachment = (docRef: Document, opts: any): Element => {
       const p = docRef.createElementNS(W_NS, "w:p");
       const pPr = getOrCreate(p, "w:pPr");
+
       const spacing = getOrCreate(pPr, "w:spacing");
       setAttr(spacing, "before", "0");
       setAttr(spacing, "after", "0");
       setAttr(spacing, "line", "240");
       setAttr(spacing, "lineRule", "auto");
 
-      const r = docRef.createElementNS(W_NS, "w:r");
-      const br = docRef.createElementNS(W_NS, "w:br");
-      setAttr(br, "type", "page");
-      r.appendChild(br);
-      p.appendChild(r);
+      const sectPr = getOrCreate(pPr, "w:sectPr");
+
+      const type = getOrCreate(sectPr, "w:type");
+      setAttr(type, "val", "nextPage");
+
+      const pgSz = getOrCreate(sectPr, "w:pgSz");
+      setAttr(pgSz, "w", "11906");
+      setAttr(pgSz, "h", "16838");
+      setAttr(pgSz, "orient", "portrait");
+
+      const pgMar = getOrCreate(sectPr, "w:pgMar");
+      setAttr(pgMar, "top", cmToTwips(getMarginCm(opts, "top", 2)));
+      setAttr(pgMar, "bottom", cmToTwips(getMarginCm(opts, "bottom", 2)));
+      setAttr(pgMar, "left", cmToTwips(getMarginCm(opts, "left", 3)));
+      setAttr(pgMar, "right", cmToTwips(getMarginCm(opts, "right", 1.5)));
+      setAttr(pgMar, "header", "708");
+      setAttr(pgMar, "footer", "708");
+      setAttr(pgMar, "gutter", "0");
+
+      const cols = getOrCreate(sectPr, "w:cols");
+      setAttr(cols, "space", "708");
+
+      const docGrid = getOrCreate(sectPr, "w:docGrid");
+      setAttr(docGrid, "linePitch", "360");
+
       return p;
     };
 
+
+    const sectionPropertiesIsLandscape = (sectPr: Element | null): boolean => {
+      if (!sectPr) return false;
+      const pgSz = Array.from(sectPr.getElementsByTagNameNS(W_NS, "pgSz"))[0];
+      if (!pgSz) return false;
+
+      const orient =
+        pgSz.getAttributeNS(W_NS, "orient") ||
+        pgSz.getAttribute("w:orient") ||
+        pgSz.getAttribute("orient") ||
+        "";
+
+      const width = Number(
+        pgSz.getAttributeNS(W_NS, "w") ||
+        pgSz.getAttribute("w:w") ||
+        pgSz.getAttribute("w") ||
+        "0"
+      );
+
+      const height = Number(
+        pgSz.getAttributeNS(W_NS, "h") ||
+        pgSz.getAttribute("w:h") ||
+        pgSz.getAttribute("h") ||
+        "0"
+      );
+
+      return orient === "landscape" || (width > 0 && height > 0 && width > height);
+    };
+
+    /**
+     * Lấy section properties cuối cùng của phần văn bản kèm theo nếu có.
+     * Nếu bảng kèm theo là trang ngang, section landscape thường nằm ở cuối fragment.
+     * Ta tách sectPr này ra khỏi fragment để không tạo section rỗng/cấu trúc khó đọc,
+     * sau đó gán nó làm body-level sectPr cuối tài liệu.
+     */
+    const extractAndRemoveLastSectionPropertiesFromFragment = (
+      fragment: DocumentFragment
+    ): Element | null => {
+      const children = Array.from(fragment.childNodes).filter(node => node.nodeType === 1) as Element[];
+      let lastSectPr: Element | null = null;
+
+      for (const child of children) {
+        const sectPrs = Array.from(child.getElementsByTagNameNS(W_NS, "sectPr")) as Element[];
+        if (sectPrs.length > 0) {
+          lastSectPr = sectPrs[sectPrs.length - 1];
+        }
+      }
+
+      if (!lastSectPr) return null;
+
+      const clone = lastSectPr.cloneNode(true) as Element;
+      const parent = lastSectPr.parentNode;
+      if (parent) {
+        parent.removeChild(lastSectPr);
+      }
+
+      return clone;
+    };
+
+    const removeChildrenByLocalName = (el: Element, names: string[]): void => {
+      const wanted = new Set(names);
+      Array.from(el.childNodes).forEach(child => {
+        if (child.nodeType !== 1) return;
+        const local = getLocalNameForSpecialDecision(child);
+        if (wanted.has(local)) {
+          el.removeChild(child);
+        }
+      });
+    };
+
+    /**
+     * Word rất nhạy với thứ tự con trực tiếp trong w:sectPr.
+     * Nếu w:headerReference bị append sau w:docGrid, một số bản Word sẽ báo
+     * "unreadable content" dù XML vẫn well-formed. Chuẩn hóa lại thứ tự theo
+     * WordprocessingML: header/footer references đứng đầu, rồi đến type/pgSz/pgMar...
+     */
+    const normalizeSectPrChildOrder = (sectPr: Element): void => {
+      const order = [
+        "headerReference",
+        "footerReference",
+        "footnotePr",
+        "endnotePr",
+        "type",
+        "pgSz",
+        "pgMar",
+        "paperSrc",
+        "pgBorders",
+        "lnNumType",
+        "pgNumType",
+        "cols",
+        "formProt",
+        "vAlign",
+        "noEndnote",
+        "titlePg",
+        "textDirection",
+        "bidi",
+        "rtlGutter",
+        "docGrid",
+        "printerSettings",
+        "sectPrChange"
+      ];
+
+      const children = Array.from(sectPr.childNodes).filter(child => child.nodeType === 1) as Element[];
+      if (children.length <= 1) return;
+
+      const orderIndex = (el: Element): number => {
+        const local = getLocalNameForSpecialDecision(el);
+        const idx = order.indexOf(local);
+        return idx >= 0 ? idx : 999;
+      };
+
+      const sorted = children
+        .map((el, index) => ({ el, index }))
+        .sort((a, b) => {
+          const diff = orderIndex(a.el) - orderIndex(b.el);
+          return diff !== 0 ? diff : a.index - b.index;
+        })
+        .map(item => item.el);
+
+      sorted.forEach(child => sectPr.appendChild(child));
+    };
+
+    const ensureDefaultHeaderReferenceFirst = (docRef: Document, sectPr: Element): void => {
+      removeChildrenByLocalName(sectPr, ["headerReference"]);
+
+      const headerRef = docRef.createElementNS(W_NS, "w:headerReference");
+      setAttr(headerRef, "type", "default");
+      headerRef.setAttributeNS(
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "r:id",
+        "rIdCustomHdr"
+      );
+
+      if (sectPr.firstChild) sectPr.insertBefore(headerRef, sectPr.firstChild);
+      else sectPr.appendChild(headerRef);
+
+      normalizeSectPrChildOrder(sectPr);
+    };
+
+    const ensureFinalBodySectPr = (docRef: Document, targetBody: Element): Element => {
+      const directSectPr = Array.from(targetBody.childNodes).find(child =>
+        child.nodeType === 1 && getLocalNameForSpecialDecision(child) === "sectPr"
+      ) as Element | undefined;
+
+      if (directSectPr) return directSectPr;
+
+      const sectPr = docRef.createElementNS(W_NS, "w:sectPr");
+      targetBody.appendChild(sectPr);
+      return sectPr;
+    };
+
+    /**
+     * Gán section cuối tài liệu theo section gốc của phần kèm theo.
+     * Mục tiêu: Quyết định chính kết thúc bằng section break khổ dọc, còn phần
+     * văn bản/bảng kèm theo nếu vốn là landscape thì section cuối của tài liệu
+     * phải là landscape ở cấp body. Cách này tránh cảnh báo "unreadable content"
+     * do để sectPr landscape trong paragraph rồi lại có một body sectPr portrait rỗng.
+     */
+    const applyFinalAttachmentSectionProperties = (
+      docRef: Document,
+      targetBody: Element,
+      attachmentSectPr: Element | null
+    ): void => {
+      if (!attachmentSectPr || !sectionPropertiesIsLandscape(attachmentSectPr)) return;
+
+      const finalSectPr = ensureFinalBodySectPr(docRef, targetBody);
+      Array.from(finalSectPr.childNodes).forEach(child => finalSectPr.removeChild(child));
+
+      Array.from(attachmentSectPr.childNodes).forEach(child => {
+        if (child.nodeType !== 1) return;
+        const local = getLocalNameForSpecialDecision(child);
+        // w:type không cần đặt ở body-level sectPr cuối; section đã được bắt đầu
+        // bằng đoạn sectPr portrait kiểu nextPage ngay trước phần kèm theo.
+        if (local === "type") return;
+        finalSectPr.appendChild(child.cloneNode(true));
+      });
+
+      const pgSz = getOrCreate(finalSectPr, "w:pgSz");
+      setAttr(pgSz, "w", "16838");
+      setAttr(pgSz, "h", "11906");
+      setAttr(pgSz, "orient", "landscape");
+
+      const pgMar = getOrCreate(finalSectPr, "w:pgMar");
+      if (!pgMar.getAttributeNS(W_NS, "top") && !pgMar.getAttribute("w:top")) {
+        setAttr(pgMar, "top", cmToTwips(getMarginCm(finalOptions, "top", 2)));
+      }
+      if (!pgMar.getAttributeNS(W_NS, "bottom") && !pgMar.getAttribute("w:bottom")) {
+        setAttr(pgMar, "bottom", cmToTwips(getMarginCm(finalOptions, "bottom", 2)));
+      }
+      if (!pgMar.getAttributeNS(W_NS, "left") && !pgMar.getAttribute("w:left")) {
+        setAttr(pgMar, "left", cmToTwips(getMarginCm(finalOptions, "left", 3)));
+      }
+      if (!pgMar.getAttributeNS(W_NS, "right") && !pgMar.getAttribute("w:right")) {
+        setAttr(pgMar, "right", cmToTwips(getMarginCm(finalOptions, "right", 1.5)));
+      }
+      setAttr(pgMar, "header", "708");
+      setAttr(pgMar, "footer", "708");
+      setAttr(pgMar, "gutter", "0");
+
+      const cols = getOrCreate(finalSectPr, "w:cols");
+      setAttr(cols, "space", "708");
+
+      const docGrid = getOrCreate(finalSectPr, "w:docGrid");
+      setAttr(docGrid, "linePitch", "360");
+
+      ensureDefaultHeaderReferenceFirst(docRef, finalSectPr);
+    };
+
+
+
+
+    /**
+     * Word repair guard for nested tables inside table cells.
+     *
+     * In WordprocessingML, a table cell should end with a paragraph. Word may
+     * display "unreadable content" when a generated cell ends directly with a
+     * nested table, which happens in our 1-cell underline tables inside the
+     * Quốc hiệu/Tiêu ngữ header cells. This pass is intentionally generic so it
+     * also protects signature/header tables created by other modules.
+     */
+    const ensureEveryTableCellEndsWithParagraph = (docRef: Document): void => {
+      const tableCells = Array.from(docRef.getElementsByTagNameNS(W_NS, "tc"));
+
+      for (const tc of tableCells) {
+        const elementChildren = Array.from(tc.childNodes).filter(
+          (node): node is Element => node.nodeType === 1
+        );
+
+        if (elementChildren.length === 0) {
+          const p = docRef.createElementNS(W_NS, "w:p");
+          tc.appendChild(p);
+          continue;
+        }
+
+        const last = elementChildren[elementChildren.length - 1];
+        const lastLocalName = getLocalNameForSpecialDecision(last);
+
+        if (lastLocalName !== "p") {
+          const p = docRef.createElementNS(W_NS, "w:p");
+          const pPr = getOrCreate(p, "w:pPr");
+          const spacing = getOrCreate(pPr, "w:spacing");
+          setAttr(spacing, "before", "0");
+          setAttr(spacing, "after", "0");
+          setAttr(spacing, "line", "1");
+          setAttr(spacing, "lineRule", "exact");
+          tc.appendChild(p);
+        }
+      }
+    };
+
+
+    /**
+     * Word repair guard for table-related OOXML child order.
+     *
+     * The generated Quốc hiệu/Tiêu ngữ and signature blocks contain tables.
+     * Word is strict about child order inside w:tblPr and w:tcPr. For example,
+     * w:tblW must appear before w:jc and w:tblBorders, while w:tcBorders must
+     * appear before w:tcMar. Earlier generated code appended properties in a
+     * visually harmless but schema-invalid order, which makes Word show
+     * "unreadable content" as soon as a generated header/signature table is inserted.
+     */
+    const reorderElementChildrenByLocalName = (
+      parent: Element,
+      preferredOrder: string[]
+    ): void => {
+      const children = Array.from(parent.childNodes).filter(
+        (node): node is Element => node.nodeType === 1
+      );
+
+      if (children.length <= 1) return;
+
+      const orderIndex = (el: Element): number => {
+        const local = getLocalNameForSpecialDecision(el);
+        const idx = preferredOrder.indexOf(local);
+        return idx >= 0 ? idx : 999;
+      };
+
+      const sorted = children
+        .map((el, index) => ({ el, index }))
+        .sort((a, b) => {
+          const diff = orderIndex(a.el) - orderIndex(b.el);
+          return diff !== 0 ? diff : a.index - b.index;
+        })
+        .map(item => item.el);
+
+      sorted.forEach(child => parent.appendChild(child));
+    };
+
+    const normalizeTableXmlForWord = (docRef: Document): void => {
+      const tblPrOrder = [
+        "tblStyle",
+        "tblpPr",
+        "tblOverlap",
+        "bidiVisual",
+        "tblStyleRowBandSize",
+        "tblStyleColBandSize",
+        "tblW",
+        "jc",
+        "tblCellSpacing",
+        "tblInd",
+        "tblBorders",
+        "shd",
+        "tblLayout",
+        "tblCellMar",
+        "tblLook",
+        "tblCaption",
+        "tblDescription",
+        "tblPrChange"
+      ];
+
+      const tcPrOrder = [
+        "cnfStyle",
+        "tcW",
+        "gridSpan",
+        "hMerge",
+        "vMerge",
+        "tcBorders",
+        "shd",
+        "noWrap",
+        "tcMar",
+        "textDirection",
+        "tcFitText",
+        "vAlign",
+        "hideMark",
+        "headers",
+        "cellIns",
+        "cellDel",
+        "cellMerge",
+        "tcPrChange"
+      ];
+
+      const moveFirstChildByLocalName = (parent: Element, localName: string): void => {
+        const child = Array.from(parent.childNodes).find(node =>
+          node.nodeType === 1 && getLocalNameForSpecialDecision(node) === localName
+        );
+
+        if (child && parent.firstChild !== child) {
+          parent.insertBefore(child, parent.firstChild);
+        }
+      };
+
+      const moveTblPrAndGridToTop = (tbl: Element): void => {
+        const tblPr = Array.from(tbl.childNodes).find(node =>
+          node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "tblPr"
+        );
+        const tblGrid = Array.from(tbl.childNodes).find(node =>
+          node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "tblGrid"
+        );
+
+        if (tblPr) tbl.insertBefore(tblPr, tbl.firstChild);
+        if (tblGrid) {
+          const insertAfter = tblPr && tblPr.parentNode === tbl ? tblPr.nextSibling : tbl.firstChild;
+          tbl.insertBefore(tblGrid, insertAfter);
+        }
+      };
+
+      /**
+       * Important: do NOT sort block-level content inside w:tc.
+       * A previous guard sorted cell children as [tcPr, p, tbl, ...], which moved the
+       * final safety paragraph before nested underline tables. That recreated cells
+       * ending with w:tbl and Word reported "unreadable content" exactly when
+       * generated Quốc hiệu/Nơi nhận tables were inserted.
+       *
+       * Only property containers are reordered. For container blocks, we only move
+       * mandatory property children to the top and keep the original block order.
+       */
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tblPr")).forEach(el => {
+        reorderElementChildrenByLocalName(el, tblPrOrder);
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tbl")).forEach(el => {
+        moveTblPrAndGridToTop(el);
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tr")).forEach(el => {
+        moveFirstChildByLocalName(el, "trPr");
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tcPr")).forEach(el => {
+        reorderElementChildrenByLocalName(el, tcPrOrder);
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tc")).forEach(el => {
+        moveFirstChildByLocalName(el, "tcPr");
+      });
+    };
 
     const createAttachmentSpacerParagraph = (
       docRef: Document,
@@ -1248,6 +1663,10 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
 
     const preservedAttachmentFragment = preservedAttachmentBoundary
       ? extractPreservedBlocksFrom(doc, body, preservedAttachmentBoundary.start)
+      : null;
+
+    const preservedAttachmentFinalSectPr = preservedAttachmentFragment
+      ? extractAndRemoveLastSectionPropertiesFromFragment(preservedAttachmentFragment)
       : null;
 
     if (preservedAttachmentFragment) {
@@ -2632,8 +3051,22 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
         }
     };
 
-    await modifyXmlFonts("word/styles.xml");
-    await modifyXmlFonts("word/numbering.xml");
+    /**
+     * IMPORTANT:
+     * Do NOT rewrite word/styles.xml or word/numbering.xml here.
+     *
+     * Earlier versions called modifyXmlFonts("word/styles.xml") and
+     * modifyXmlFonts("word/numbering.xml"). That made Word report:
+     *   "Word found unreadable content" -> Show Repairs -> "Styles 1".
+     *
+     * The main document XML is already normalized below by walking all w:rPr nodes
+     * in word/document.xml. Rewriting styles.xml is unnecessary for the final
+     * visual result and is riskier because Word is strict about style-part schema
+     * ordering and table-style metadata. Keep the original styles/numbering parts
+     * intact to avoid repair dialogs.
+     */
+    // await modifyXmlFonts("word/styles.xml");
+    // await modifyXmlFonts("word/numbering.xml");
 
     const sectPrs = getNodes(doc, "sectPr");
 
@@ -2645,16 +3078,8 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
           sPr.appendChild(titlePg);
         }
 
-        const headerRefs = Array.from(sPr.getElementsByTagName("w:headerReference"));
-
-        for (const hr of headerRefs) {
-          if (hr.getAttribute("w:type") === "default") sPr.removeChild(hr);
-        }
-
-        const newHdrRef = doc.createElementNS(W_NS, "w:headerReference");
-        setAttr(newHdrRef, "type", "default");
-        newHdrRef.setAttribute("r:id", "rIdCustomHdr");
-        sPr.appendChild(newHdrRef);
+        ensureDefaultHeaderReferenceFirst(doc, sPr);
+        normalizeSectPrChildOrder(sPr);
     }
 
 
@@ -2662,7 +3087,7 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
     if (preservedAttachmentFragment) {
       decoratePreservedAttachmentFragmentLeadIn(doc, preservedAttachmentFragment);
       formatPreservedAttachmentFragmentSafely(preservedAttachmentFragment);
-      insertBeforeSectPrOrAppendToBody(body, createPageBreakForPreservedAttachment(doc));
+      insertBeforeSectPrOrAppendToBody(body, createPortraitSectionBreakBeforePreservedAttachment(doc, finalOptions));
       insertBeforeSectPrOrAppendToBody(body, createAttachmentHeaderForPreservedDecision(doc, body));
       insertBeforeSectPrOrAppendToBody(body, createAttachmentSpacerParagraph(doc, "240"));
       insertBeforeSectPrOrAppendToBody(body, preservedAttachmentFragment);
@@ -2675,7 +3100,28 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
 
     forceFinalPageMargins(doc, finalOptions);
 
+    if (preservedAttachmentFinalSectPr) {
+      applyFinalAttachmentSectionProperties(doc, body, preservedAttachmentFinalSectPr);
+    }
+
+    // Chuẩn hóa lần cuối mọi w:sectPr sau khi đã chèn section break/phần kèm theo.
+    // Tránh lỗi Word repair do thứ tự headerReference/titlePg/docGrid không đúng.
+    getNodes(doc, "sectPr").forEach(sPr => {
+      ensureDefaultHeaderReferenceFirst(doc, sPr);
+      normalizeSectPrChildOrder(sPr);
+    });
+
     enforceSchema(doc);
+
+    // Word repair guard: enforceSchema may normalize generic OOXML order,
+    // but for mixed portrait/landscape documents Word is especially strict
+    // about the direct child order inside every w:sectPr. Run this AFTER
+    // enforceSchema so the final serialized document.xml cannot end with
+    // w:docGrid before w:cols / w:titlePg / w:pgNumType.
+    getNodes(doc, "sectPr").forEach(sPr => {
+      ensureDefaultHeaderReferenceFirst(doc, sPr);
+      normalizeSectPrChildOrder(sPr);
+    });
 
     const fontSize = finalOptions.font.sizeTable * 2;
     const fontFamily = finalOptions.font.family;
@@ -2711,6 +3157,17 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
       );
       zip.file("word/_rels/document.xml.rels", relsXml);
     }
+
+    // Final Word repair guards for generated header/signature tables.
+    normalizeTableXmlForWord(doc);
+    ensureEveryTableCellEndsWithParagraph(doc);
+    normalizeTableXmlForWord(doc);
+
+    // Re-apply sectPr order after the final table/table-cell guards just before serialization.
+    getNodes(doc, "sectPr").forEach(sPr => {
+      ensureDefaultHeaderReferenceFirst(doc, sPr);
+      normalizeSectPrChildOrder(sPr);
+    });
 
     const newDocXml = serializer.serializeToString(doc);
     zip.file(docXmlPath, newDocXml);
