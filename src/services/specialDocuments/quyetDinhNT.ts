@@ -77,8 +77,43 @@ const cleanSignerName = (name: string): string => {
     .join(' ');
 };
 
-const isQuyetDinhNT = (options: any, docType: string): boolean => {
+const isChiBoDecisionLike = (options: any, docType: string, doc?: Document): boolean => {
   const type = normalizeForDetect(docType || '');
+  const specialType = normalizeForDetect(String(options?.specialDocumentType || ''));
+  const optionDocType = normalizeForDetect(String(options?.docType || ''));
+  const headerType = normalizeForDetect(String(options?.headerType || ''));
+  const bodyText = doc ? normalizeForDetect(doc.documentElement?.textContent || '') : '';
+
+  return (
+    options?.isChiBoDecision === true ||
+    options?.isPartyDecision === true ||
+    specialType.includes('CHI BO') ||
+    specialType.includes('CAP UY CHI BO') ||
+    specialType.includes('QUYET DINH CHI BO') ||
+    optionDocType.includes('CHI BO') ||
+    optionDocType.includes('CAP UY CHI BO') ||
+    type.includes('CHI BO') ||
+    type.includes('CAP UY CHI BO') ||
+    headerType.includes('PARTY') ||
+    headerType.includes('DANG') ||
+    bodyText.includes('CHI BO QUYET DINH') ||
+    bodyText.includes('CAP UY CHI BO') ||
+    bodyText.includes('CHI UY CHI BO') ||
+    bodyText.includes('DANG CONG SAN VIET NAM') && bodyText.includes('CHI BO')
+  );
+};
+
+const isQuyetDinhNT = (options: any, docType: string, doc?: Document): boolean => {
+  const type = normalizeForDetect(docType || '');
+
+  /**
+   * Chặn Quyết định Chi bộ/Đảng rơi nhầm vào module Quyết định nhà trường.
+   * Nếu không chặn, chỉ cần headerType còn là SCHOOL và isDecision=true
+   * thì module này sẽ sinh sai khối Nơi nhận/chữ ký cho văn bản Chi bộ.
+   */
+  if (isChiBoDecisionLike(options, docType, doc)) {
+    return false;
+  }
 
   return (
     options?.headerType === HeaderType.SCHOOL &&
@@ -1782,7 +1817,7 @@ export const insertQuyetDinhNTSignatureBlock = (
   options: any,
   docType: string
 ): boolean => {
-  if (!isQuyetDinhNT(options, docType)) return false;
+  if (!isQuyetDinhNT(options, docType, doc)) return false;
 
   const body = getBody(doc);
   if (!body) return false;

@@ -51,6 +51,61 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
     const doc = parser.parseFromString(docXmlContent, "application/xml");
     const body = getNodes(doc, "body")[0];
 
+    /**
+     * CẦU NỐI SỚM CHO QUYẾT ĐỊNH CHI BỘ
+     * ------------------------------------------------
+     * Ép HeaderType.PARTY trước các bước cleanHeader/createHeaderTemplate.
+     * Nếu không ép sớm, văn bản Chi bộ có thể bị xử lý nhầm như Quyết định nhà trường.
+     */
+    const normalizeEarlyForChiBoDecision = (value: string): string => {
+      return String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[Đđ]/g, "D")
+        .replace(/[-_]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+    };
+
+    const earlyBodyTextForChiBoDecision = normalizeEarlyForChiBoDecision(body?.textContent || "");
+    const earlyDocTypeForChiBoDecision = normalizeEarlyForChiBoDecision(String((finalOptions as any).docType || ""));
+    const earlySpecialTypeForChiBoDecision = normalizeEarlyForChiBoDecision(String((finalOptions as any).specialDocumentType || ""));
+    const earlyHeaderTypeForChiBoDecision = normalizeEarlyForChiBoDecision(String((finalOptions as any).headerType || ""));
+
+    const isEarlyChiBoDecision =
+      finalOptions.isDecision === true &&
+      (
+        earlyBodyTextForChiBoDecision.includes("CHI BO QUYET DINH") ||
+        earlyBodyTextForChiBoDecision.includes("CAP UY CHI BO") ||
+        earlyBodyTextForChiBoDecision.includes("CHI UY CHI BO") ||
+        earlyBodyTextForChiBoDecision.includes("CHI BO TRUONG") ||
+        earlyBodyTextForChiBoDecision.includes("DANG UY XA") ||
+        earlyDocTypeForChiBoDecision.includes("CHI BO") ||
+        earlyDocTypeForChiBoDecision.includes("CAP UY CHI BO") ||
+        earlySpecialTypeForChiBoDecision.includes("CHI BO") ||
+        earlySpecialTypeForChiBoDecision.includes("CAP UY CHI BO") ||
+        earlyHeaderTypeForChiBoDecision.includes("PARTY") ||
+        earlyHeaderTypeForChiBoDecision.includes("DANG") ||
+        earlyHeaderTypeForChiBoDecision.includes("CHI BO") ||
+        (
+          earlyBodyTextForChiBoDecision.includes("DANG CONG SAN VIET NAM") &&
+          earlyBodyTextForChiBoDecision.includes("CHI BO")
+        )
+      );
+
+    if (isEarlyChiBoDecision) {
+      (finalOptions as any).headerType = HeaderType.PARTY;
+      (finalOptions as any).isChiBoDecision = true;
+      (finalOptions as any).isPartyDecision = true;
+      (finalOptions as any).specialDocumentType =
+        (finalOptions as any).specialDocumentType || "quyet-dinh-chi-bo";
+      (finalOptions as any).docType =
+        (finalOptions as any).docType || "Quyết định của cấp ủy chi bộ Đảng";
+
+      logs.push("QuyetDinhChiBo EARLY: forced HeaderType.PARTY before clean/header pipeline");
+    }
+
     const parseCmValue = (value: any, fallback: number): number => {
       if (typeof value === "number" && !Number.isNaN(value)) return value;
 
@@ -2760,6 +2815,188 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
 
       if (isHeading) forceParagraphBold(pPr);
     }
+
+    const forceNormalizeChiBoDecisionAuthorityCommand = (): void => {
+      if (!body) return;
+
+      const normalizeForChiBoForce = (value: string): string => {
+        return String(value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[Đđ]/g, "D")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toUpperCase();
+      };
+
+      const stripBulletForChiBoForce = (value: string): string => {
+        return normalizeForChiBoForce(value)
+          .replace(/^[-+*•–—\s]+/, "")
+          .trim();
+      };
+
+      const getLocalNameForChiBoForce = (node: Node): string => {
+        const name = (node as Element).localName || node.nodeName || "";
+        return name.includes(":") ? name.split(":").pop() || name : name;
+      };
+
+      const getBlockTextForChiBoForce = (node: Node | null | undefined): string => {
+        return String(node?.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+      };
+
+      const isLegalBasisLineForChiBoForce = (text: string): boolean => {
+        const t = stripBulletForChiBoForce(text);
+
+        return (
+          t.startsWith("CAN CU") ||
+          t.startsWith("XET") ||
+          t.startsWith("THEO") ||
+          t.startsWith("THUC HIEN")
+        );
+      };
+
+      const isArticleOneLineForChiBoForce = (text: string): boolean => {
+        const t = stripBulletForChiBoForce(text);
+        return /^DIEU\s+1[\.\:]/.test(t) || /^DIEU\s+1\s+/.test(t);
+      };
+
+      const isDecisionTitleLineForChiBoForce = (text: string): boolean => {
+        const t = normalizeForChiBoForce(text);
+        return t === "QUYET DINH" || t === "QUYET DINH:";
+      };
+
+      const isChiBoDecisionDocumentForForce = (): boolean => {
+        const allText = normalizeForChiBoForce(body.textContent || "");
+        const optionDocType = normalizeForChiBoForce(String((finalOptions as any).docType || ""));
+        const specialType = normalizeForChiBoForce(String((finalOptions as any).specialDocumentType || ""));
+
+        return (
+          finalOptions.isDecision === true &&
+          (
+            allText.includes("CHI BO QUYET DINH") ||
+            allText.includes("CAP UY CHI BO") ||
+            allText.includes("CHI UY CHI BO") ||
+            allText.includes("CHI BO TRUONG") ||
+            allText.includes("DANG UY XA") ||
+            optionDocType.includes("CHI BO") ||
+            optionDocType.includes("CAP UY CHI BO") ||
+            specialType.includes("CHI BO") ||
+            specialType.includes("CAP UY CHI BO") ||
+            (
+              allText.includes("DANG CONG SAN VIET NAM") &&
+              allText.includes("CHI BO")
+            )
+          )
+        );
+      };
+
+      if (!isChiBoDecisionDocumentForForce()) return;
+
+      const blocks = Array.from(body.childNodes).filter(
+        (node): node is Element => node.nodeType === 1
+      );
+
+      let firstDecisionTitleIndex = -1;
+      let lastLegalBasisIndex = -1;
+      let firstArticleOneIndex = -1;
+
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (getLocalNameForChiBoForce(block) !== "p") continue;
+
+        const text = getBlockTextForChiBoForce(block);
+        if (!text) continue;
+
+        if (firstDecisionTitleIndex < 0 && isDecisionTitleLineForChiBoForce(text)) {
+          firstDecisionTitleIndex = i;
+          continue;
+        }
+
+        if (firstDecisionTitleIndex < 0) continue;
+
+        if (isLegalBasisLineForChiBoForce(text)) {
+          lastLegalBasisIndex = i;
+          continue;
+        }
+
+        if (lastLegalBasisIndex >= 0 && isArticleOneLineForChiBoForce(text)) {
+          firstArticleOneIndex = i;
+          break;
+        }
+      }
+
+      if (lastLegalBasisIndex < 0 || firstArticleOneIndex < 0) return;
+
+      const zoneBlocks = blocks
+        .slice(lastLegalBasisIndex + 1, firstArticleOneIndex)
+        .filter(block => getLocalNameForChiBoForce(block) === "p");
+
+      const insertBeforeBlock = blocks[firstArticleOneIndex];
+
+      const hardP = doc.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(hardP, "w:pPr");
+
+      const jc = getOrCreate(pPr, "w:jc");
+      setAttr(jc, "val", "center");
+
+      const ind = getOrCreate(pPr, "w:ind");
+      setAttr(ind, "left", "0");
+      setAttr(ind, "right", "0");
+      setAttr(ind, "firstLine", "0");
+      ind.removeAttributeNS(W_NS, "hanging");
+      ind.removeAttribute("w:hanging");
+
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "240");
+      setAttr(spacing, "after", "240");
+      setAttr(spacing, "line", "240");
+      setAttr(spacing, "lineRule", "auto");
+
+      forceParagraphBold(pPr);
+
+      const r = doc.createElementNS(W_NS, "w:r");
+      const rPr = getOrCreate(r, "w:rPr");
+
+      const rFonts = getOrCreate(rPr, "w:rFonts");
+      setAttr(rFonts, "ascii", finalOptions.font.family);
+      setAttr(rFonts, "hAnsi", finalOptions.font.family);
+      setAttr(rFonts, "cs", finalOptions.font.family);
+      setAttr(rFonts, "eastAsia", finalOptions.font.family);
+
+      forceBoldNode(rPr);
+
+      const sz = getOrCreate(rPr, "w:sz");
+      setAttr(sz, "val", "28");
+
+      const szCs = getOrCreate(rPr, "w:szCs");
+      setAttr(szCs, "val", "28");
+
+      const t = doc.createElementNS(W_NS, "w:t");
+      t.textContent = "CẤP ỦY CHI BỘ QUYẾT ĐỊNH";
+
+      r.appendChild(t);
+      hardP.appendChild(r);
+
+      body.insertBefore(hardP, insertBeforeBlock);
+
+      zoneBlocks.forEach(block => {
+        if (block.parentNode === body) {
+          body.removeChild(block);
+        }
+      });
+
+      (finalOptions as any).headerType = HeaderType.PARTY;
+      (finalOptions as any).isChiBoDecision = true;
+      (finalOptions as any).isPartyDecision = true;
+      (finalOptions as any).specialDocumentType =
+        (finalOptions as any).specialDocumentType || "quyet-dinh-chi-bo";
+
+      logs.push("QuyetDinhChiBo FORCE: replaced authority command zone with CẤP ỦY CHI BỘ QUYẾT ĐỊNH");
+    };
+
+    forceNormalizeChiBoDecisionAuthorityCommand();
 
     if (finalOptions.headerType !== HeaderType.NONE && body) {
         const headerTable = createHeaderTemplate(doc, finalOptions);
