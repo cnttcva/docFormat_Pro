@@ -1,4 +1,3 @@
-// File: src/services/specialDocuments/quyetDinhChiBo.ts
 import {
   W_NS,
   getOrCreate,
@@ -16,7 +15,7 @@ const normalizeForDetect = (value: string): string => {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[Đđ]/g, match => (match === 'Đ' ? 'D' : 'd'))
     .replace(/[\u00A0\t\r\n]+/g, ' ')
-    .replace(/[-_]+/g, match => match.includes('-') ? '-' : ' ')
+    .replace(/[-_]+/g, match => (match.includes('-') ? '-' : ' '))
     .replace(/\s+/g, ' ')
     .trim()
     .toUpperCase();
@@ -359,6 +358,23 @@ const isAttachmentNoteStartLine = (text: string): boolean => {
   );
 };
 
+const isMainDecisionAttachmentNoteLine = (text: string): boolean => {
+  const raw = normalizeText(text);
+  const t = normalizeForDetect(raw);
+
+  return (
+    raw.startsWith('(') &&
+    raw.endsWith(')') &&
+    (
+      t.includes('CO BAN QUY CHE KEM THEO') ||
+      t.includes('CO QUY CHE KEM THEO') ||
+      t.includes('CO BAN QUY DINH KEM THEO') ||
+      t.includes('CO QUY DINH KEM THEO') ||
+      t.includes('CO PHU LUC KEM THEO')
+    )
+  );
+};
+
 const isAttachmentTitleLine = (text: string): boolean => {
   const t = normalizeForDetect(text);
 
@@ -374,7 +390,8 @@ const isAttachmentTitleLine = (text: string): boolean => {
     'KE HOACH',
     'CHUONG TRINH',
     'BAO CAO',
-    'NGHI QUYET'
+    'NGHI QUYET',
+    'NOI QUY'
   ];
 
   return titles.some(title => t === title || t.startsWith(`${title} `));
@@ -683,6 +700,114 @@ const createP = (
   return p;
 };
 
+const toNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const normalized = String(value)
+    .replace(',', '.')
+    .replace(/[^\d.\-]/g, '')
+    .trim();
+
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const toTwipsFromCm = (cm: number): string => {
+  return String(Math.round(cm * 567));
+};
+
+const resolveBodyFontSize = (options: any): number => {
+  const size = [
+    options?.fontSize,
+    options?.paragraphFontSize,
+    options?.bodyFontSize,
+    options?.contentFontSize,
+    options?.defaultFontSize,
+    options?.mainFontSize
+  ]
+    .map(toNumber)
+    .find(value => value !== null && value > 0);
+
+  return size && size > 0 ? size : 14;
+};
+
+const resolveBodyLineTwips = (options: any): string => {
+  const lineTwips = [
+    options?.paragraphLineTwips,
+    options?.bodyLineTwips,
+    options?.lineTwips
+  ]
+    .map(toNumber)
+    .find(value => value !== null && value > 0);
+
+  if (lineTwips && lineTwips > 0) {
+    return String(Math.round(lineTwips));
+  }
+
+  const lineMultiple = [
+    options?.lineSpacing,
+    options?.paragraphLineSpacing,
+    options?.bodyLineSpacing,
+    options?.lines
+  ]
+    .map(toNumber)
+    .find(value => value !== null && value > 0);
+
+  const effective = lineMultiple && lineMultiple > 0 ? lineMultiple : 1.15;
+  return String(Math.round(effective * 240));
+};
+
+const resolveBodyFirstLineTwips = (options: any): string => {
+  const twipsDirect = [
+    options?.firstLineTwips,
+    options?.paragraphFirstLineTwips,
+    options?.bodyFirstLineTwips
+  ]
+    .map(toNumber)
+    .find(value => value !== null && value > 0);
+
+  if (twipsDirect && twipsDirect > 0) {
+    return String(Math.round(twipsDirect));
+  }
+
+  const fromUi = [
+    options?.firstLineIndentCm,
+    options?.paragraphFirstLineIndentCm,
+    options?.bodyFirstLineIndentCm,
+    options?.firstLineIndent,
+    options?.paragraphFirstLineIndent,
+    options?.indentFirstLine,
+    options?.firstLine
+  ]
+    .map(toNumber)
+    .find(value => value !== null && value > 0);
+
+  if (fromUi && fromUi > 0) {
+    if (fromUi > 100) {
+      return String(Math.round(fromUi));
+    }
+    return toTwipsFromCm(fromUi);
+  }
+
+  return '720';
+};
+
+const getBodyFormatSpec = (options: any): {
+  size: number;
+  line: string;
+  firstLine: string;
+} => {
+  return {
+    size: resolveBodyFontSize(options),
+    line: resolveBodyLineTwips(options),
+    firstLine: resolveBodyFirstLineTwips(options)
+  };
+};
+
 const createPageBreakParagraph = (doc: Document): Element => {
   const p = doc.createElementNS(W_NS, 'w:p');
   const pPr = getOrCreate(p, 'w:pPr');
@@ -841,14 +966,12 @@ const createTwoColumnHeaderTable = (
     }));
 
     if (index === rightLines.length - 1) {
-      tc2.appendChild(createLineTable(doc, '3600', '4')); // Độ dài đường kẻ bằng cụm 'ĐẢNG CỘNG SẢN VIỆT NAM' size 15
+      tc2.appendChild(createLineTable(doc, '3600', '4'));
     }
   });
 
   return tbl;
 };
-
-
 
 const normalizeParentPartyBodyLine = (value: string): string => {
   const clean = toUpperVietnamese(value)
@@ -869,14 +992,6 @@ const splitChiBoHeaderLines = (chiBoText: string): string[] => {
 
   if (!clean) return [];
 
-  /**
-   * Ngắt dòng thông minh theo yêu cầu:
-   * - Không tách riêng "CHI BỘ" thành một dòng.
-   * - Chỉ đưa phần tên riêng của trường xuống dòng:
-   *   CHI BỘ TRƯỜNG THCS / CHU VĂN AN
-   *   CHI BỘ TRƯỜNG THPT / NGÔ THÌ NHẬM
-   *   CHI BỘ TRƯỜNG TIỂU HỌC / NGÔ GIA TỰ
-   */
   const schoolPrefixMatch = clean.match(
     /^(CHI BỘ\s+TRƯỜNG\s+(?:THCS|THPT|PTTH|TH\s*&\s*THCS|TH\s*-\s*THCS|TIỂU HỌC|TH|MẦM NON|MN|TRUNG HỌC CƠ SỞ|TRUNG HỌC PHỔ THÔNG))\s+(.+)$/i
   );
@@ -989,12 +1104,28 @@ const getMainDecisionExecutionArticleNumber = (doc: Document): string => {
   return foundExecutionArticle || lastArticleNumber;
 };
 
-const getQuyetDinhChiBoReceivers = (options: any, doc: Document): string[] => {
-  if (Array.isArray(options?.receivers) && options.receivers.length > 0) {
-    return options.receivers.map((item: unknown) => String(item || '')).filter(Boolean);
+const hasAutoArticleReceiver = (receivers: unknown[]): boolean => {
+  return receivers.some(item => {
+    const t = normalizeForDetect(String(item || ''));
+    return t.includes('NHU DIEU');
+  });
+};
+
+const getQuyetDinhChiBoReceivers = (
+  options: any,
+  doc: Document,
+  forcedArticleNumber?: string
+): string[] => {
+  const optionReceivers = Array.isArray(options?.receivers)
+    ? options.receivers.map((item: unknown) => String(item || '')).filter(Boolean)
+    : [];
+
+  if (optionReceivers.length > 0 && !hasAutoArticleReceiver(optionReceivers)) {
+    return optionReceivers;
   }
 
-  const executionArticleNumber = getMainDecisionExecutionArticleNumber(doc);
+  const executionArticleNumber =
+    forcedArticleNumber || getMainDecisionExecutionArticleNumber(doc);
 
   return [
     '- Đảng ủy (để báo cáo)',
@@ -1072,15 +1203,20 @@ export const createQuyetDinhChiBoSignatureBlock = (
   tc1.appendChild(createP(doc, 'Nơi nhận:', {
     underline: true,
     align: 'left',
-    size: 12
+    size: 14,
+    before: '240'
   }));
 
-  const receivers = getQuyetDinhChiBoReceivers(options, doc);
+  const receivers = getQuyetDinhChiBoReceivers(
+    options,
+    doc,
+    String(options?.receiverArticleNumber || '')
+  );
 
   receivers.forEach((receiver, index) => {
     tc1.appendChild(createP(doc, normalizeReceiverEnd(receiver, index, receivers.length), {
       align: 'left',
-      size: 11,
+      size: 12,
       left: '340',
       hanging: '340'
     }));
@@ -1093,7 +1229,8 @@ export const createQuyetDinhChiBoSignatureBlock = (
   tc2.appendChild(createP(doc, signerAuthority, {
     bold: true,
     align: 'center',
-    size: 14
+    size: 14,
+    before: '240'
   }));
 
   tc2.appendChild(createP(doc, signerTitle, {
@@ -1613,7 +1750,6 @@ const removeExistingSignatureAndReceivers = (doc: Document): void => {
 
   let blocks = getDirectBodyBlocks(body);
 
-  // Remove signature tables generated by this module or older modules.
   blocks.forEach(block => {
     if (!isTable(block)) return;
     const text = normalizeForDetect(getText(block));
@@ -1676,11 +1812,6 @@ const isLikelyChapterTitleLine = (text: string): boolean => {
   const letters = raw.replace(/[^A-Za-zÀ-ỹĐđ]/g, '');
   const isMostlyUppercase = letters.length >= 4 && letters === letters.toUpperCase();
 
-  /**
-   * Tên chương thường là các dòng ngay sau "Chương I/II...":
-   * - in hoa, đậm; hoặc
-   * - in thường nhưng là dòng tiêu đề ngắn, không mở đầu bằng Điều/Khoản/điểm.
-   */
   const looksLikeShortTitle =
     raw.length >= 6 &&
     raw.length <= 180 &&
@@ -1793,6 +1924,36 @@ const isSignatureBlockLike = (block: Element): boolean => {
   );
 };
 
+const getLastAttachmentArticleNumber = (
+  doc: Document,
+  attachmentStart: Element | null
+): string => {
+  const body = getBody(doc);
+  if (!body || !attachmentStart) return '';
+
+  const blocks = getDirectBodyBlocks(body);
+  const startIndex = blocks.indexOf(attachmentStart);
+  if (startIndex < 0) return '';
+
+  let last = '';
+
+  for (let i = startIndex; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (isSectPr(block)) break;
+
+    const text = getText(block);
+    if (!text) continue;
+    if (isNoiNhanLine(text) || isSignerLine(text)) break;
+
+    const articleNo = getArticleNumber(text);
+    if (articleNo !== null) {
+      last = String(articleNo);
+    }
+  }
+
+  return last;
+};
+
 const insertAttachmentSignatureBlockIfNeeded = (
   doc: Document,
   options: any,
@@ -1814,11 +1975,6 @@ const insertAttachmentSignatureBlockIfNeeded = (
   if (nextMeaningfulIndex >= 0 && isSignatureBlockLike(blocks[nextMeaningfulIndex])) {
     const nextText = normalizeForDetect(getText(blocks[nextMeaningfulIndex]));
 
-    /**
-     * Nếu đã có đủ khối Nơi nhận + T/M + chức danh thì không chèn lại.
-     * Nếu chỉ có T/M CHI BỘ/BÍ THƯ bị sót từ lần xử lý trước thì xóa cụm đó
-     * và dựng lại khối chữ ký đầy đủ có Nơi nhận.
-     */
     if (
       nextText.includes('NOI NHAN') &&
       (
@@ -1849,7 +2005,15 @@ const insertAttachmentSignatureBlockIfNeeded = (
 
   const refreshedBlocks = getDirectBodyBlocks(body);
   const refreshedEndingBlock = refreshedBlocks.find(block => block === endingBlock) || endingBlock;
-  const signatureBlock = createQuyetDinhChiBoSignatureBlock(doc, options, docType);
+  const attachmentReceiverArticleNumber = getLastAttachmentArticleNumber(doc, attachmentStart);
+  const signatureBlock = createQuyetDinhChiBoSignatureBlock(
+    doc,
+    {
+      ...options,
+      receiverArticleNumber: attachmentReceiverArticleNumber || undefined
+    },
+    docType
+  );
   const nextSibling = refreshedEndingBlock.nextSibling;
 
   if (nextSibling) {
@@ -1858,8 +2022,6 @@ const insertAttachmentSignatureBlockIfNeeded = (
     insertBeforeSectPrOrAppendToBody(body, signatureBlock);
   }
 };
-
-
 
 const findLastAttachmentStartIndexForFinalFix = (blocks: Element[]): number => {
   let result = -1;
@@ -1944,6 +2106,7 @@ const normalizeAttachmentEndingAndEnsureSignature = (
   const attachmentStartIndex = findLastAttachmentStartIndexForFinalFix(blocks);
   if (attachmentStartIndex < 0) return;
 
+  const attachmentStart = blocks[attachmentStartIndex] || null;
   let endingBlock: Element | null = null;
   let endingIndex = -1;
 
@@ -1985,7 +2148,15 @@ const normalizeAttachmentEndingAndEnsureSignature = (
 
   removeSignatureLikeBlocksAfterIndex(body, blocks, endingIndex + 1);
 
-  const signatureBlock = createQuyetDinhChiBoSignatureBlock(doc, options, docType);
+  const attachmentReceiverArticleNumber = getLastAttachmentArticleNumber(doc, attachmentStart);
+  const signatureBlock = createQuyetDinhChiBoSignatureBlock(
+    doc,
+    {
+      ...options,
+      receiverArticleNumber: attachmentReceiverArticleNumber || undefined
+    },
+    docType
+  );
   const nextSibling = endingBlock.nextSibling;
 
   if (nextSibling) {
@@ -1994,6 +2165,7 @@ const normalizeAttachmentEndingAndEnsureSignature = (
     insertBeforeSectPrOrAppendToBody(body, signatureBlock);
   }
 };
+
 const normalizeAttachmentHeadings = (doc: Document, attachmentStart: Element | null): void => {
   if (!attachmentStart) return;
 
@@ -2065,18 +2237,36 @@ const normalizeAttachmentHeadings = (doc: Document, attachmentStart: Element | n
         left: '0'
       });
 
-      /**
-       * Tên chương có thể kéo dài 1-3 dòng. Xử lý cả chuỗi dòng tiêu đề ngay
-       * sau dòng Chương I/II..., chỉ dừng khi gặp Điều hoặc đoạn nội dung thường.
-       */
       let titleEndIndex = i;
+      let scannedTitleLines = 0;
+
       for (let j = i + 1; j < blocks.length; j++) {
         const candidate = blocks[j];
         if (!isParagraph(candidate)) break;
 
         const candidateText = getText(candidate);
-        if (!candidateText || isEmptyLine(candidateText) || isDecorativeLine(candidateText)) continue;
-        if (!isLikelyChapterTitleLine(candidateText)) break;
+
+        if (!candidateText || isEmptyLine(candidateText) || isDecorativeLine(candidateText)) {
+          continue;
+        }
+
+        if (isArticleLine(candidateText)) break;
+        if (isChapterLine(candidateText)) break;
+        if (isNoiNhanLine(candidateText)) break;
+
+        const ct = normalizeForDetect(candidateText);
+        const isActualSignerLine =
+          ct.startsWith('T/M ') ||
+          ct.startsWith('TM.') ||
+          (candidateText.length < 20 && (ct === 'BI THU' || ct === 'PHO BI THU' || ct === 'CHI UY VIEN'));
+        if (isActualSignerLine) break;
+
+        if (isAttachmentTitleLine(candidateText)) break;
+        if (isAttachmentNoteStartLine(candidateText)) break;
+        if (isDecisionLegalBasisLine(candidateText)) break;
+
+        scannedTitleLines += 1;
+        if (scannedTitleLines > 4) break;
 
         titleEndIndex = j;
       }
@@ -2147,7 +2337,384 @@ const normalizeAttachmentHeadings = (doc: Document, attachmentStart: Element | n
   }
 };
 
-const normalizeDecisionBodyArticleParagraphs = (doc: Document): void => {
+const normalizeAttachmentMainTitleCluster = (
+  doc: Document,
+  attachmentStart: Element | null
+): void => {
+  if (!attachmentStart) return;
+
+  const body = getBody(doc);
+  if (!body) return;
+
+  const blocks = getDirectBodyBlocks(body);
+  const startIndex = blocks.indexOf(attachmentStart);
+  if (startIndex < 0) return;
+
+  let titleStarted = false;
+
+  for (let i = startIndex; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (!isParagraph(block)) continue;
+
+    const text = getText(block);
+    if (!text || isEmptyLine(text)) continue;
+
+    if (!titleStarted && isAttachmentTitleLine(text)) {
+      titleStarted = true;
+
+      hardResetParagraphAsSingleRun(doc, block, toUpperVietnamese(text), {
+        bold: true,
+        align: 'center',
+        size: 14,
+        before: '360',
+        after: '0',
+        line: '240',
+        firstLine: '0',
+        left: '0'
+      });
+
+      continue;
+    }
+
+    if (!titleStarted) continue;
+
+    if (
+      isDecorativeLine(text) ||
+      isAttachmentNoteStartLine(text) ||
+      isChapterLine(text) ||
+      isArticleLine(text) ||
+      isNoiNhanLine(text) ||
+      isSignerLine(text)
+    ) {
+      break;
+    }
+
+    hardResetParagraphAsSingleRun(doc, block, toUpperVietnamese(text), {
+      bold: true,
+      align: 'center',
+      size: 14,
+      before: '0',
+      after: '0',
+      line: '240',
+      firstLine: '0',
+      left: '0'
+    });
+  }
+};
+
+const normalizeArticlePrefixSpacing = (text: string): string => {
+  return normalizeText(text)
+    .replace(/^(Đi[êề]\u0300?u\s+\d+[\.:])\s*/iu, '$1 ')
+    .replace(/^(Điều\s+\d+[\.:])\s*/iu, '$1 ')
+    .replace(/^(Điều\s+\d+[\.:])\s*/iu, '$1 ')
+    .replace(/^(Dieu\s+\d+[\.:])\s*/iu, '$1 ');
+};
+
+const normalizeAttachmentChapterTitlesHard = (
+  doc: Document,
+  attachmentStart: Element | null,
+  options: any
+): void => {
+  if (!attachmentStart) return;
+
+  const body = getBody(doc);
+  if (!body) return;
+
+  const blocks = getDirectBodyBlocks(body);
+  const startIndex = blocks.indexOf(attachmentStart);
+  if (startIndex < 0) return;
+
+  for (let i = startIndex; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (!isParagraph(block)) continue;
+
+    const text = getText(block);
+    if (!text) continue;
+
+    if (!isChapterLine(text)) continue;
+
+    hardResetParagraphAsSingleRun(doc, block, text, {
+      bold: true,
+      align: 'center',
+      size: 14,
+      before: '360',
+      after: '0',
+      line: '240',
+      firstLine: '0',
+      left: '0'
+    });
+
+    const titleIndexes: number[] = [];
+    let articleIndex = -1;
+
+    for (let j = i + 1; j < blocks.length; j++) {
+      const candidate = blocks[j];
+      if (!isParagraph(candidate)) break;
+
+      const candidateText = getText(candidate);
+
+      if (!candidateText || isEmptyLine(candidateText) || isDecorativeLine(candidateText)) {
+        continue;
+      }
+
+      if (isArticleLine(candidateText)) {
+        articleIndex = j;
+        break;
+      }
+
+      const ct = normalizeForDetect(candidateText);
+      const isActualSignerLine =
+        ct.startsWith('T/M ') ||
+        ct.startsWith('TM.') ||
+        (candidateText.length < 20 && (ct === 'BI THU' || ct === 'PHO BI THU' || ct === 'CHI UY VIEN'));
+
+      if (
+        isChapterLine(candidateText) ||
+        isNoiNhanLine(candidateText) ||
+        isActualSignerLine ||
+        isAttachmentTitleLine(candidateText) ||
+        isAttachmentNoteStartLine(candidateText) ||
+        isDecisionLegalBasisLine(candidateText)
+      ) {
+        break;
+      }
+
+      titleIndexes.push(j);
+      if (titleIndexes.length >= 6) break;
+    }
+
+    titleIndexes.forEach((titleIndex, position) => {
+      const titleBlock = blocks[titleIndex];
+      const titleText = getText(titleBlock);
+      if (!titleText) return;
+
+      const isLastTitleLine = position === titleIndexes.length - 1;
+
+      hardResetParagraphAsSingleRun(doc, titleBlock, toUpperVietnamese(titleText), {
+        bold: true,
+        align: 'center',
+        size: 14,
+        before: '0',
+        after: isLastTitleLine ? '120' : '0',
+        line: '240',
+        firstLine: '0',
+        left: '0'
+      });
+    });
+
+    if (articleIndex >= 0) {
+      const articleBlock = blocks[articleIndex];
+      const articleText = normalizeArticlePrefixSpacing(getText(articleBlock));
+
+      formatArticleParagraph(doc, articleBlock, articleText, options);
+
+      i = articleIndex;
+    } else if (titleIndexes.length > 0) {
+      i = titleIndexes[titleIndexes.length - 1];
+    }
+  }
+};
+
+const normalizeAllChapterTitlesInBody = (doc: Document): void => {
+  const body = getBody(doc);
+  if (!body) return;
+
+  const containers: Element[] = [body];
+  const cells = Array.from(body.getElementsByTagNameNS(W_NS, 'tc')) as Element[];
+  containers.push(...cells);
+
+  for (const container of containers) {
+    const blocks = Array.from(container.childNodes).filter(
+      n => n.nodeType === 1
+    ) as Element[];
+
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      if (!isParagraph(block)) continue;
+
+      const text = getText(block);
+      if (!text || !isChapterLine(text)) continue;
+
+      hardResetParagraphAsSingleRun(doc, block, toUpperVietnamese(text), {
+        bold: true,
+        align: 'center',
+        size: 14,
+        before: '360',
+        after: '0',
+        line: '240',
+        firstLine: '0',
+        left: '0'
+      });
+
+      const titleIndexes: number[] = [];
+      let articleIndex = -1;
+
+      for (let j = i + 1; j < blocks.length; j++) {
+        const candidate = blocks[j];
+        if (!isParagraph(candidate)) break;
+
+        const candidateText = getText(candidate);
+
+        if (!candidateText || isEmptyLine(candidateText) || isDecorativeLine(candidateText)) {
+          continue;
+        }
+
+        if (isArticleLine(candidateText)) {
+          articleIndex = j;
+          break;
+        }
+
+        const ct = normalizeForDetect(candidateText);
+        const isActualSignerLine =
+          ct.startsWith('T/M ') ||
+          ct.startsWith('TM.') ||
+          (candidateText.length < 20 && (ct === 'BI THU' || ct === 'PHO BI THU' || ct === 'CHI UY VIEN'));
+
+        if (
+          isChapterLine(candidateText) ||
+          isNoiNhanLine(candidateText) ||
+          isActualSignerLine ||
+          isAttachmentTitleLine(candidateText) ||
+          isAttachmentNoteStartLine(candidateText) ||
+          isDecisionLegalBasisLine(candidateText) ||
+          isMainDecisionTitleLine(candidateText) ||
+          isDecisionAuthorityLine(candidateText)
+        ) {
+          break;
+        }
+
+        titleIndexes.push(j);
+        if (titleIndexes.length >= 6) break;
+      }
+
+      titleIndexes.forEach((titleIndex, position) => {
+        const titleBlock = blocks[titleIndex];
+        const titleText = getText(titleBlock);
+        if (!titleText) return;
+
+        const isLastTitleLine = position === titleIndexes.length - 1;
+
+        hardResetParagraphAsSingleRun(doc, titleBlock, toUpperVietnamese(titleText), {
+          bold: true,
+          align: 'center',
+          size: 14,
+          before: '0',
+          after: isLastTitleLine ? '120' : '0',
+          line: '240',
+          firstLine: '0',
+          left: '0'
+        });
+      });
+
+      if (articleIndex >= 0) {
+        i = articleIndex - 1;
+      } else if (titleIndexes.length > 0) {
+        i = titleIndexes[titleIndexes.length - 1];
+      }
+    }
+  }
+};
+
+const forceCenterAllChapterTitlesFinal = (doc: Document): void => {
+  const body = getBody(doc);
+  if (!body) return;
+
+  const containers: Element[] = [body];
+  const cells = Array.from(body.getElementsByTagNameNS(W_NS, 'tc')) as Element[];
+  containers.push(...cells);
+
+  const forceCenterParagraph = (p: Element, upperText: string, afterTwips: string): void => {
+    const pPr = getOrCreate(p, 'w:pPr');
+
+    const jc = getOrCreate(pPr, 'w:jc');
+    setAttr(jc, 'val', 'center');
+
+    const ind = getOrCreate(pPr, 'w:ind');
+    setAttr(ind, 'left', '0');
+    setAttr(ind, 'right', '0');
+    setAttr(ind, 'firstLine', '0');
+    ind.removeAttribute('w:hanging');
+
+    hardResetParagraphAsSingleRun(doc, p, upperText, {
+      bold: true,
+      align: 'center',
+      size: 14,
+      before: '0',
+      after: afterTwips,
+      line: '240',
+      firstLine: '0',
+      left: '0'
+    });
+  };
+
+  for (const container of containers) {
+    const blocks = Array.from(container.childNodes).filter(
+      n => n.nodeType === 1
+    ) as Element[];
+
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      if (!isParagraph(block)) continue;
+
+      const text = getText(block);
+      if (!text || !isChapterLine(text)) continue;
+
+      forceCenterParagraph(block, toUpperVietnamese(text), '0');
+
+      const titleCandidates: Element[] = [];
+
+      for (let j = i + 1; j < blocks.length; j++) {
+        const candidate = blocks[j];
+        if (!isParagraph(candidate)) break;
+
+        const candidateText = getText(candidate);
+
+        if (!candidateText || isEmptyLine(candidateText) || isDecorativeLine(candidateText)) {
+          continue;
+        }
+
+        if (isArticleLine(candidateText)) break;
+        if (isChapterLine(candidateText)) break;
+        if (isNoiNhanLine(candidateText)) break;
+
+        const ct = normalizeForDetect(candidateText);
+        const isActualSignerLine =
+          ct.startsWith('T/M ') ||
+          ct.startsWith('TM.') ||
+          (candidateText.length < 20 && (ct === 'BI THU' || ct === 'PHO BI THU' || ct === 'CHI UY VIEN'));
+        if (isActualSignerLine) break;
+
+        if (isAttachmentTitleLine(candidateText)) break;
+        if (isAttachmentNoteStartLine(candidateText)) break;
+        if (isDecisionLegalBasisLine(candidateText)) break;
+        if (isMainDecisionTitleLine(candidateText)) break;
+        if (isDecisionAuthorityLine(candidateText)) break;
+
+        titleCandidates.push(candidate);
+      }
+
+      titleCandidates.forEach((cand, idx) => {
+        const isLast = idx === titleCandidates.length - 1;
+        forceCenterParagraph(cand, toUpperVietnamese(getText(cand)), isLast ? '120' : '0');
+      });
+    }
+  }
+};
+
+const formatAllArticleParagraphsInBody = (doc: Document, options: any): void => {
+  const body = getBody(doc);
+  if (!body) return;
+
+  const allParagraphs = Array.from(body.getElementsByTagNameNS(W_NS, 'p')) as Element[];
+
+  for (const p of allParagraphs) {
+    const text = getText(p);
+    if (!text || !isArticleLine(text)) continue;
+    formatArticleParagraph(doc, p, normalizeArticlePrefixSpacing(text), options);
+  }
+};
+
+const normalizeDecisionBodyArticleParagraphs = (doc: Document, options: any): void => {
   const body = getBody(doc);
   if (!body) return;
 
@@ -2169,17 +2736,89 @@ const normalizeDecisionBodyArticleParagraphs = (doc: Document): void => {
     if (isAttachmentTitleLine(text) || isAttachmentNoteStartLine(text)) break;
     if (isNoiNhanLine(text) || isSignerLine(text)) break;
 
-    if (isArticleLine(text)) {
+    if (isMainDecisionAttachmentNoteLine(text)) {
       hardResetParagraphAsSingleRun(doc, block, text, {
-        align: 'both',
-        size: 14,
+        italic: true,
+        align: 'center',
+        size: 13,
         before: '0',
-        after: '0',
+        after: '120',
         line: '240',
-        firstLine: '720',
+        firstLine: '0',
         left: '0'
       });
+      continue;
     }
+
+    if (isArticleLine(text)) {
+      formatArticleParagraph(doc, block, normalizeArticlePrefixSpacing(text), options);
+    }
+  }
+};
+
+const formatArticleParagraph = (
+  doc: Document,
+  p: Element,
+  fullText: string,
+  options: any
+): void => {
+  const cleanText = normalizeText(fullText);
+  const bodyFormat = getBodyFormatSpec(options);
+
+  const match = cleanText.match(/^(Điều\s+\d+\s*[.:])\s*(.*)$/iu) ||
+                cleanText.match(/^(Điều\s+\d+)\s+(.+)$/iu);
+
+  const articlePrefix = match ? match[1].trim() : cleanText;
+  const articleBody = match ? match[2].trim() : '';
+
+  const pPr = clearParagraphContentKeepPPr(p);
+
+  const jc = getOrCreate(pPr, 'w:jc');
+  setAttr(jc, 'val', 'both');
+
+  const ind = getOrCreate(pPr, 'w:ind');
+  setAttr(ind, 'left', '0');
+  setAttr(ind, 'right', '0');
+  setAttr(ind, 'firstLine', bodyFormat.firstLine);
+  ind.removeAttribute('w:hanging');
+
+  setParagraphSpacing(p, '0', '0', bodyFormat.line);
+
+  const pPrRPr = Array.from(pPr.childNodes).find(
+    n => n.nodeType === 1 && getLocalName(n as Element) === 'rPr'
+  ) as Element | undefined;
+  if (pPrRPr) {
+    const bs = Array.from(pPrRPr.childNodes).filter(
+      n => n.nodeType === 1 && (getLocalName(n as Element) === 'b' || getLocalName(n as Element) === 'bCs')
+    );
+    bs.forEach(b => pPrRPr.removeChild(b));
+  }
+
+  const createRun = (text: string, bold: boolean): Element => {
+    const r = doc.createElementNS(W_NS, 'w:r');
+    const rPr = getOrCreate(r, 'w:rPr');
+
+    const sizeVal = String(Math.round(bodyFormat.size * 2));
+    const sz = getOrCreate(rPr, 'w:sz');
+    setAttr(sz, 'val', sizeVal);
+    const szCs = getOrCreate(rPr, 'w:szCs');
+    setAttr(szCs, 'val', sizeVal);
+
+    if (bold) {
+      forceBoldNode(rPr);
+    }
+
+    const t = doc.createElementNS(W_NS, 'w:t');
+    setAttr(t, 'space' as any, 'preserve');
+    t.setAttribute('xml:space', 'preserve');
+    t.textContent = text;
+    r.appendChild(t);
+    return r;
+  };
+
+  p.appendChild(createRun(articlePrefix, true));
+  if (articleBody) {
+    p.appendChild(createRun(' ' + articleBody, false));
   }
 };
 
@@ -2197,13 +2836,16 @@ export const insertQuyetDinhChiBoSignatureBlock = (
   normalizeLegalBasisLines(doc);
   normalizeAuthorityCommandZone(doc, options, docType);
   normalizeOrphanEffectiveArticle(doc);
-  normalizeDecisionBodyArticleParagraphs(doc);
+  normalizeDecisionBodyArticleParagraphs(doc, options);
+  normalizeAllChapterTitlesInBody(doc);
   removeExistingSignatureAndReceivers(doc);
 
   const detectedAttachmentStart = findAttachmentStartAfterDecisionEnding(doc);
 
   if (detectedAttachmentStart) {
     normalizeAttachmentHeadings(doc, detectedAttachmentStart);
+    normalizeAttachmentMainTitleCluster(doc, detectedAttachmentStart);
+    normalizeAttachmentChapterTitlesHard(doc, detectedAttachmentStart, options);
 
     const attachmentFragment = extractBodyBlocksFrom(doc, body, detectedAttachmentStart);
 
@@ -2223,15 +2865,23 @@ export const insertQuyetDinhChiBoSignatureBlock = (
     }) || null;
 
     normalizeAttachmentHeadings(doc, refreshedAttachmentStart);
+    normalizeAttachmentMainTitleCluster(doc, refreshedAttachmentStart);
+    normalizeAttachmentChapterTitlesHard(doc, refreshedAttachmentStart, options);
+    normalizeAllChapterTitlesInBody(doc);
     insertAttachmentSignatureBlockIfNeeded(doc, options, docType, refreshedAttachmentStart);
     normalizeAttachmentEndingAndEnsureSignature(doc, options, docType);
+    forceCenterAllChapterTitlesFinal(doc);
+    formatAllArticleParagraphsInBody(doc, options);
 
     return true;
   }
 
   const signatureBlock = createQuyetDinhChiBoSignatureBlock(doc, options, docType);
   insertBeforeSectPrOrAppend(doc, signatureBlock);
+  normalizeAllChapterTitlesInBody(doc);
   normalizeAttachmentEndingAndEnsureSignature(doc, options, docType);
+  forceCenterAllChapterTitlesFinal(doc);
+  formatAllArticleParagraphsInBody(doc, options);
 
   return true;
 };
