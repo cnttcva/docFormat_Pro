@@ -319,13 +319,23 @@ const isDateLine = (text: string): boolean => {
 const isMainDecisionEndingText = (text: string): boolean => {
   const t = normalizeForDetect(text);
 
+  // Điểm kết thúc Quyết định phải ưu tiên theo các cụm kết thúc pháp lý.
+  // Các cụm thường gặp:
+  // - "... chịu trách nhiệm thi hành Quyết định này./."
+  // - "Quyết định có hiệu lực kể từ ngày ký./."
+  // - "Quyết định này có hiệu lực kể từ ngày ký./."
+  // Chấp nhận thêm lỗi gõ "trrách" -> normalize thành "TRRACH" để không bỏ sót.
   return (
     t.includes('CAN CU QUYET DINH THI HANH') ||
     t.includes('CAN CU QUYET DINH NAY THI HANH') ||
     t.includes('CHIU TRACH NHIEM THI HANH QUYET DINH NAY') ||
     t.includes('CHIU TRACH NHIEM THI HANH QUYET DINH') ||
     t.includes('CHIU TRACH NHIEM THI HANH') ||
+    t.includes('CHIU TRRACH NHIEM THI HANH QUYET DINH NAY') ||
+    t.includes('CHIU TRRACH NHIEM THI HANH QUYET DINH') ||
+    t.includes('CHIU TRRACH NHIEM THI HANH') ||
     t.includes('QUYET DINH NAY CO HIEU LUC') ||
+    t.includes('QUYET DINH CO HIEU LUC') ||
     t.includes('CO HIEU LUC KE TU NGAY KY') ||
     t.includes('CO HIEU LUC TU NGAY KY') ||
     t.includes('KE TU NGAY KY') ||
@@ -350,6 +360,12 @@ const isOrphanEffectiveLine = (text: string): boolean => {
 const isAttachmentNoteStartLine = (text: string): boolean => {
   const raw = normalizeText(text);
   const t = normalizeForDetect(text);
+
+  // Không được coi dòng "Điều ..." là ghi chú văn bản kèm theo,
+  // kể cả trong dòng đó có cụm "(ban hành kèm theo Quyết định này)".
+  // Nếu không chặn, Điều 3/Điều 4 của Quyết định Chi bộ sẽ bị tách nhầm
+  // thành văn bản kèm theo, dẫn đến chèn Nơi nhận + chữ ký quá sớm.
+  if (isArticleLine(raw)) return false;
 
   return (
     raw.includes('(') &&
@@ -1654,7 +1670,7 @@ const findMainDecisionEndingIndex = (doc: Document): number => {
   const blocks = getDirectBodyBlocks(body);
   let commandSeen = false;
   let lastArticleIndex = -1;
-  let lastEndingIndex = -1;
+  let lastExplicitEndingIndex = -1;
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
@@ -1670,20 +1686,34 @@ const findMainDecisionEndingIndex = (doc: Document): number => {
 
     if (!commandSeen) continue;
 
-    if (isAttachmentTitleLine(text) || isAttachmentNoteStartLine(text)) {
-      break;
-    }
-
+    // Luôn ưu tiên quét hết các dòng Điều.
+    // Ví dụ: "Điều 3. ... (ban hành kèm theo Quyết định này)" vẫn là nội dung chính,
+    // không phải điểm bắt đầu văn bản kèm theo.
     if (isArticleLine(text)) {
       lastArticleIndex = i;
+
+      if (isMainDecisionEndingText(text)) {
+        lastExplicitEndingIndex = i;
+      }
+
+      continue;
     }
 
     if (isMainDecisionEndingText(text)) {
-      lastEndingIndex = i;
+      lastExplicitEndingIndex = i;
+      continue;
+    }
+
+    // Chỉ cho phép dừng tại tiêu đề/ghi chú phụ lục sau khi đã gặp cụm kết thúc
+    // kiểu "chịu trách nhiệm thi hành..." hoặc "có hiệu lực kể từ ngày ký...".
+    if (lastExplicitEndingIndex >= 0 && (isAttachmentTitleLine(text) || isAttachmentNoteStartLine(text))) {
+      break;
     }
   }
 
-  return lastEndingIndex >= 0 ? lastEndingIndex : lastArticleIndex;
+  // Ưu tiên tuyệt đối điểm kết thúc có cụm pháp lý.
+  // Fallback lastArticleIndex chỉ để không phá các mẫu cũ chưa có câu kết chuẩn.
+  return lastExplicitEndingIndex >= 0 ? lastExplicitEndingIndex : lastArticleIndex;
 };
 
 const findAttachmentStartAfterDecisionEnding = (doc: Document): Element | null => {
@@ -1703,8 +1733,19 @@ const findAttachmentStartAfterDecisionEnding = (doc: Document): Element | null =
     if (!text || isEmptyLine(text) || isDecorativeLine(text) || isPageNumberLine(text)) continue;
     if (isNoiNhanLine(text) || isSignerLine(text) || isReceiverItemLine(text)) continue;
 
+    // Nếu sau vị trí kết thúc tạm thời vẫn gặp Điều 3, Điều 4...
+    // thì đây vẫn là phần nội dung chính của Quyết định.
+    // Tuyệt đối không nhận là văn bản kèm theo.
+    if (isArticleLine(text)) {
+      continue;
+    }
+
     if (isParagraph(block)) {
-      if (isAttachmentTitleLine(text) || isAttachmentNoteStartLine(text) || isLikelyGenericAttachmentTitleBlock(block)) {
+      if (
+        isAttachmentNoteStartLine(text) ||
+        isAttachmentTitleLine(text) ||
+        isLikelyGenericAttachmentTitleBlock(block)
+      ) {
         return block;
       }
     }

@@ -26,12 +26,6 @@ import {
   ensureFinalBodySectPr,
   removeChildrenByLocalName
 } from './docx/docSection';
-import {
-  ensureEveryTableCellEndsWithParagraph,
-  normalizeTableXmlForWord,
-  reorderElementChildrenByLocalName
-} from './docx/docRepairGuards';
-import { removeAutomaticNumbering } from './docx/docNumbering';
 // 🔥 MỤC TIÊU 1: NÂNG CẤP LÕI NHẬN DIỆN TỪ ĐIỂN ĐÁM MÂY
 export const processDocx = async (file: File, options: DocxOptions, dictionary: any[] = []): Promise<ProcessResult> => {
   const logs: string[] = [];
@@ -724,7 +718,35 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
      * Quốc hiệu/Tiêu ngữ header cells. This pass is intentionally generic so it
      * also protects signature/header tables created by other modules.
      */
-    
+    const ensureEveryTableCellEndsWithParagraph = (docRef: Document): void => {
+      const tableCells = Array.from(docRef.getElementsByTagNameNS(W_NS, "tc"));
+
+      for (const tc of tableCells) {
+        const elementChildren = Array.from(tc.childNodes).filter(
+          (node): node is Element => node.nodeType === 1
+        );
+
+        if (elementChildren.length === 0) {
+          const p = docRef.createElementNS(W_NS, "w:p");
+          tc.appendChild(p);
+          continue;
+        }
+
+        const last = elementChildren[elementChildren.length - 1];
+        const lastLocalName = getLocalNameForSpecialDecision(last);
+
+        if (lastLocalName !== "p") {
+          const p = docRef.createElementNS(W_NS, "w:p");
+          const pPr = getOrCreate(p, "w:pPr");
+          const spacing = getOrCreate(pPr, "w:spacing");
+          setAttr(spacing, "before", "0");
+          setAttr(spacing, "after", "0");
+          setAttr(spacing, "line", "1");
+          setAttr(spacing, "lineRule", "exact");
+          tc.appendChild(p);
+        }
+      }
+    };
 
 
     /**
@@ -737,9 +759,131 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
      * visually harmless but schema-invalid order, which makes Word show
      * "unreadable content" as soon as a generated header/signature table is inserted.
      */
-    
+    const reorderElementChildrenByLocalName = (
+      parent: Element,
+      preferredOrder: string[]
+    ): void => {
+      const children = Array.from(parent.childNodes).filter(
+        (node): node is Element => node.nodeType === 1
+      );
 
-    
+      if (children.length <= 1) return;
+
+      const orderIndex = (el: Element): number => {
+        const local = getLocalNameForSpecialDecision(el);
+        const idx = preferredOrder.indexOf(local);
+        return idx >= 0 ? idx : 999;
+      };
+
+      const sorted = children
+        .map((el, index) => ({ el, index }))
+        .sort((a, b) => {
+          const diff = orderIndex(a.el) - orderIndex(b.el);
+          return diff !== 0 ? diff : a.index - b.index;
+        })
+        .map(item => item.el);
+
+      sorted.forEach(child => parent.appendChild(child));
+    };
+
+    const normalizeTableXmlForWord = (docRef: Document): void => {
+      const tblPrOrder = [
+        "tblStyle",
+        "tblpPr",
+        "tblOverlap",
+        "bidiVisual",
+        "tblStyleRowBandSize",
+        "tblStyleColBandSize",
+        "tblW",
+        "jc",
+        "tblCellSpacing",
+        "tblInd",
+        "tblBorders",
+        "shd",
+        "tblLayout",
+        "tblCellMar",
+        "tblLook",
+        "tblCaption",
+        "tblDescription",
+        "tblPrChange"
+      ];
+
+      const tcPrOrder = [
+        "cnfStyle",
+        "tcW",
+        "gridSpan",
+        "hMerge",
+        "vMerge",
+        "tcBorders",
+        "shd",
+        "noWrap",
+        "tcMar",
+        "textDirection",
+        "tcFitText",
+        "vAlign",
+        "hideMark",
+        "headers",
+        "cellIns",
+        "cellDel",
+        "cellMerge",
+        "tcPrChange"
+      ];
+
+      const moveFirstChildByLocalName = (parent: Element, localName: string): void => {
+        const child = Array.from(parent.childNodes).find(node =>
+          node.nodeType === 1 && getLocalNameForSpecialDecision(node) === localName
+        );
+
+        if (child && parent.firstChild !== child) {
+          parent.insertBefore(child, parent.firstChild);
+        }
+      };
+
+      const moveTblPrAndGridToTop = (tbl: Element): void => {
+        const tblPr = Array.from(tbl.childNodes).find(node =>
+          node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "tblPr"
+        );
+        const tblGrid = Array.from(tbl.childNodes).find(node =>
+          node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "tblGrid"
+        );
+
+        if (tblPr) tbl.insertBefore(tblPr, tbl.firstChild);
+        if (tblGrid) {
+          const insertAfter = tblPr && tblPr.parentNode === tbl ? tblPr.nextSibling : tbl.firstChild;
+          tbl.insertBefore(tblGrid, insertAfter);
+        }
+      };
+
+      /**
+       * Important: do NOT sort block-level content inside w:tc.
+       * A previous guard sorted cell children as [tcPr, p, tbl, ...], which moved the
+       * final safety paragraph before nested underline tables. That recreated cells
+       * ending with w:tbl and Word reported "unreadable content" exactly when
+       * generated Quốc hiệu/Nơi nhận tables were inserted.
+       *
+       * Only property containers are reordered. For container blocks, we only move
+       * mandatory property children to the top and keep the original block order.
+       */
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tblPr")).forEach(el => {
+        reorderElementChildrenByLocalName(el, tblPrOrder);
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tbl")).forEach(el => {
+        moveTblPrAndGridToTop(el);
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tr")).forEach(el => {
+        moveFirstChildByLocalName(el, "trPr");
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tcPr")).forEach(el => {
+        reorderElementChildrenByLocalName(el, tcPrOrder);
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tc")).forEach(el => {
+        moveFirstChildByLocalName(el, "tcPr");
+      });
+    };
 
     const createAttachmentSpacerParagraph = (
       docRef: Document,
@@ -1490,10 +1634,148 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
     }
 
     // ==========================================
+    // BƯỚC 2: XÓA ĐÁNH SỐ TỰ ĐỘNG
     // ==========================================
-// BƯỚC 2: XÓA ĐÁNH SỐ TỰ ĐỘNG
-// ==========================================
-await removeAutomaticNumbering(doc, zip, parser, finalOptions);
+    let listFormats: Record<string, string> = {};
+    const numberingXmlContent = await zip.file("word/numbering.xml")?.async("string");
+
+    if (numberingXmlContent) {
+        const numDoc = parser.parseFromString(numberingXmlContent, "application/xml");
+        const nums = getNodes(numDoc, "num");
+        const abstractNums = getNodes(numDoc, "abstractNum");
+
+        const numToAbstractMap: Record<string, string> = {};
+
+        for (const num of nums) {
+            const numId = num.getAttributeNS(W_NS, "numId") || num.getAttribute("w:numId");
+            const absNumIdEl = getNodes(num, "abstractNumId")[0];
+
+            if (numId && absNumIdEl) {
+              numToAbstractMap[numId] =
+                absNumIdEl.getAttributeNS(W_NS, "val") ||
+                absNumIdEl.getAttribute("w:val") ||
+                "";
+            }
+        }
+
+        const absNumMap: Record<string, Element> = {};
+
+        for (const absNum of abstractNums) {
+            const absId =
+              absNum.getAttributeNS(W_NS, "abstractNumId") ||
+              absNum.getAttribute("w:abstractNumId");
+
+            if (absId) absNumMap[absId] = absNum;
+        }
+
+        for (const numId in numToAbstractMap) {
+            const absId = numToAbstractMap[numId];
+            const absNum = absNumMap[absId];
+
+            if (absNum) {
+                const lvls = getNodes(absNum, "lvl");
+
+                for (const lvl of lvls) {
+                    const ilvl = lvl.getAttributeNS(W_NS, "ilvl") || lvl.getAttribute("w:ilvl");
+                    const numFmtEl = getNodes(lvl, "numFmt")[0];
+                    const numFmt = numFmtEl
+                      ? (numFmtEl.getAttributeNS(W_NS, "val") || numFmtEl.getAttribute("w:val"))
+                      : "";
+
+                    if (ilvl && numFmt) listFormats[`${numId}_${ilvl}`] = numFmt;
+                }
+            }
+        }
+    }
+
+    if (finalOptions.removeNumbering) {
+        const allParagraphs = getNodes(doc, "p");
+        let listCounters: Record<string, number> = {};
+
+        for (const p of allParagraphs) {
+            const pPr = getNodes(p, "pPr")[0];
+
+            let fullText = "";
+            const pRunsForText = getNodes(p, "r");
+
+            for (const r of pRunsForText) {
+                Array.from(r.childNodes).forEach(child => {
+                    const name = child.nodeName.replace("w:", "");
+                    if (name === "t") fullText += child.textContent;
+                    if (name === "tab") fullText += " ";
+                });
+            }
+
+            fullText = fullText.trim();
+
+            if (pPr) {
+                const numPr = getNodes(pPr, "numPr")[0];
+
+                if (numPr) {
+                    const ilvlEl = getNodes(numPr, "ilvl")[0];
+                    const numIdEl = getNodes(numPr, "numId")[0];
+
+                    const ilvl = ilvlEl
+                      ? (ilvlEl.getAttributeNS(W_NS, "val") || ilvlEl.getAttribute("w:val") || "0")
+                      : "0";
+
+                    const numId = numIdEl
+                      ? (numIdEl.getAttributeNS(W_NS, "val") || numIdEl.getAttribute("w:val") || "0")
+                      : "0";
+
+                    const levelKey = `${numId}_${ilvl}`;
+                    const numFmt = listFormats[levelKey] || "decimal";
+
+                    if (!listCounters[levelKey]) listCounters[levelKey] = 0;
+                    listCounters[levelKey]++;
+
+                    const hasListPrefix = /^([IVXLCDM]+\.|[0-9]+\.|[a-zđ]\)|\-|\+|\*|•)/i.test(fullText);
+
+                    if (!hasListPrefix && fullText.length > 0) {
+                        let prefix = "";
+
+                        if (numFmt === "bullet") prefix = "";
+                        else if (numFmt === "decimal") prefix = `${listCounters[levelKey]}. `;
+                        else if (numFmt === "lowerLetter") prefix = `${String.fromCharCode(96 + listCounters[levelKey])}) `;
+                        else if (numFmt === "upperLetter") prefix = `${String.fromCharCode(64 + listCounters[levelKey])}. `;
+                        else prefix = `${listCounters[levelKey]}. `;
+
+                        if (prefix !== "") {
+                            const r = doc.createElementNS(W_NS, "w:r");
+                            const t = doc.createElementNS(W_NS, "w:t");
+
+                            t.setAttribute("xml:space", "preserve");
+                            t.textContent = prefix;
+                            r.appendChild(t);
+
+                            const insertBeforeNode = pPr.nextSibling;
+
+                            if (insertBeforeNode) p.insertBefore(r, insertBeforeNode);
+                            else p.appendChild(r);
+                        }
+                    }
+
+                    pPr.removeChild(numPr);
+                }
+            }
+
+            const firstRun = getNodes(p, "r")[0];
+
+            if (firstRun) {
+                const firstText = getNodes(firstRun, "t")[0];
+
+                if (firstText && firstText.textContent) {
+                    const bulletRegex = /^[\s]*([•\-\–\—\*])[\s]+/;
+
+                    if (bulletRegex.test(firstText.textContent)) {
+                        firstText.textContent = firstText.textContent.replace(bulletRegex, "").trimStart();
+                    }
+                }
+            }
+        }
+    }
+
+    formatPageStructure(doc, finalOptions);
     normalizeTables(doc, finalOptions);
 
     const rebuildParagraph = (

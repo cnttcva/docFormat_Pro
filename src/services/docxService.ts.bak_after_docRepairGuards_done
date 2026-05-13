@@ -31,7 +31,6 @@ import {
   normalizeTableXmlForWord,
   reorderElementChildrenByLocalName
 } from './docx/docRepairGuards';
-import { removeAutomaticNumbering } from './docx/docNumbering';
 // 🔥 MỤC TIÊU 1: NÂNG CẤP LÕI NHẬN DIỆN TỪ ĐIỂN ĐÁM MÂY
 export const processDocx = async (file: File, options: DocxOptions, dictionary: any[] = []): Promise<ProcessResult> => {
   const logs: string[] = [];
@@ -1490,10 +1489,148 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
     }
 
     // ==========================================
+    // BƯỚC 2: XÓA ĐÁNH SỐ TỰ ĐỘNG
     // ==========================================
-// BƯỚC 2: XÓA ĐÁNH SỐ TỰ ĐỘNG
-// ==========================================
-await removeAutomaticNumbering(doc, zip, parser, finalOptions);
+    let listFormats: Record<string, string> = {};
+    const numberingXmlContent = await zip.file("word/numbering.xml")?.async("string");
+
+    if (numberingXmlContent) {
+        const numDoc = parser.parseFromString(numberingXmlContent, "application/xml");
+        const nums = getNodes(numDoc, "num");
+        const abstractNums = getNodes(numDoc, "abstractNum");
+
+        const numToAbstractMap: Record<string, string> = {};
+
+        for (const num of nums) {
+            const numId = num.getAttributeNS(W_NS, "numId") || num.getAttribute("w:numId");
+            const absNumIdEl = getNodes(num, "abstractNumId")[0];
+
+            if (numId && absNumIdEl) {
+              numToAbstractMap[numId] =
+                absNumIdEl.getAttributeNS(W_NS, "val") ||
+                absNumIdEl.getAttribute("w:val") ||
+                "";
+            }
+        }
+
+        const absNumMap: Record<string, Element> = {};
+
+        for (const absNum of abstractNums) {
+            const absId =
+              absNum.getAttributeNS(W_NS, "abstractNumId") ||
+              absNum.getAttribute("w:abstractNumId");
+
+            if (absId) absNumMap[absId] = absNum;
+        }
+
+        for (const numId in numToAbstractMap) {
+            const absId = numToAbstractMap[numId];
+            const absNum = absNumMap[absId];
+
+            if (absNum) {
+                const lvls = getNodes(absNum, "lvl");
+
+                for (const lvl of lvls) {
+                    const ilvl = lvl.getAttributeNS(W_NS, "ilvl") || lvl.getAttribute("w:ilvl");
+                    const numFmtEl = getNodes(lvl, "numFmt")[0];
+                    const numFmt = numFmtEl
+                      ? (numFmtEl.getAttributeNS(W_NS, "val") || numFmtEl.getAttribute("w:val"))
+                      : "";
+
+                    if (ilvl && numFmt) listFormats[`${numId}_${ilvl}`] = numFmt;
+                }
+            }
+        }
+    }
+
+    if (finalOptions.removeNumbering) {
+        const allParagraphs = getNodes(doc, "p");
+        let listCounters: Record<string, number> = {};
+
+        for (const p of allParagraphs) {
+            const pPr = getNodes(p, "pPr")[0];
+
+            let fullText = "";
+            const pRunsForText = getNodes(p, "r");
+
+            for (const r of pRunsForText) {
+                Array.from(r.childNodes).forEach(child => {
+                    const name = child.nodeName.replace("w:", "");
+                    if (name === "t") fullText += child.textContent;
+                    if (name === "tab") fullText += " ";
+                });
+            }
+
+            fullText = fullText.trim();
+
+            if (pPr) {
+                const numPr = getNodes(pPr, "numPr")[0];
+
+                if (numPr) {
+                    const ilvlEl = getNodes(numPr, "ilvl")[0];
+                    const numIdEl = getNodes(numPr, "numId")[0];
+
+                    const ilvl = ilvlEl
+                      ? (ilvlEl.getAttributeNS(W_NS, "val") || ilvlEl.getAttribute("w:val") || "0")
+                      : "0";
+
+                    const numId = numIdEl
+                      ? (numIdEl.getAttributeNS(W_NS, "val") || numIdEl.getAttribute("w:val") || "0")
+                      : "0";
+
+                    const levelKey = `${numId}_${ilvl}`;
+                    const numFmt = listFormats[levelKey] || "decimal";
+
+                    if (!listCounters[levelKey]) listCounters[levelKey] = 0;
+                    listCounters[levelKey]++;
+
+                    const hasListPrefix = /^([IVXLCDM]+\.|[0-9]+\.|[a-zđ]\)|\-|\+|\*|•)/i.test(fullText);
+
+                    if (!hasListPrefix && fullText.length > 0) {
+                        let prefix = "";
+
+                        if (numFmt === "bullet") prefix = "";
+                        else if (numFmt === "decimal") prefix = `${listCounters[levelKey]}. `;
+                        else if (numFmt === "lowerLetter") prefix = `${String.fromCharCode(96 + listCounters[levelKey])}) `;
+                        else if (numFmt === "upperLetter") prefix = `${String.fromCharCode(64 + listCounters[levelKey])}. `;
+                        else prefix = `${listCounters[levelKey]}. `;
+
+                        if (prefix !== "") {
+                            const r = doc.createElementNS(W_NS, "w:r");
+                            const t = doc.createElementNS(W_NS, "w:t");
+
+                            t.setAttribute("xml:space", "preserve");
+                            t.textContent = prefix;
+                            r.appendChild(t);
+
+                            const insertBeforeNode = pPr.nextSibling;
+
+                            if (insertBeforeNode) p.insertBefore(r, insertBeforeNode);
+                            else p.appendChild(r);
+                        }
+                    }
+
+                    pPr.removeChild(numPr);
+                }
+            }
+
+            const firstRun = getNodes(p, "r")[0];
+
+            if (firstRun) {
+                const firstText = getNodes(firstRun, "t")[0];
+
+                if (firstText && firstText.textContent) {
+                    const bulletRegex = /^[\s]*([•\-\–\—\*])[\s]+/;
+
+                    if (bulletRegex.test(firstText.textContent)) {
+                        firstText.textContent = firstText.textContent.replace(bulletRegex, "").trimStart();
+                    }
+                }
+            }
+        }
+    }
+
+    formatPageStructure(doc, finalOptions);
     normalizeTables(doc, finalOptions);
 
     const rebuildParagraph = (

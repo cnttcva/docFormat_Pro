@@ -1,0 +1,170 @@
+// File: src/services/docx/docSection.ts
+import { W_NS, TWIPS_PER_CM, getNodes, getOrCreate, setAttr } from '../docUtils';
+
+const getLocalName = (node: Node): string => {
+  const name = (node as Element).localName || node.nodeName || '';
+  return name.includes(':') ? name.split(':').pop() || name : name;
+};
+
+export const parseCmValue = (value: any, fallback: number): number => {
+  if (typeof value === 'number' && !Number.isNaN(value)) return value;
+
+  if (typeof value === 'string') {
+    const normalized = value.replace(',', '.').trim();
+    const parsed = Number(normalized);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+
+  return fallback;
+};
+
+export const getMarginCm = (
+  opts: any,
+  key: 'top' | 'bottom' | 'left' | 'right',
+  fallback: number
+): number => {
+  return parseCmValue(
+    opts?.margins?.[key] ??
+      opts?.margin?.[key] ??
+      opts?.pageMargins?.[key] ??
+      opts?.page?.margins?.[key] ??
+      opts?.page?.margin?.[key] ??
+      opts?.page?.[key] ??
+      opts?.[key],
+    fallback
+  );
+};
+
+export const cmToTwips = (cm: number): string => {
+  return String(Math.round(cm * TWIPS_PER_CM));
+};
+
+export const forceFinalPageMargins = (doc: Document, opts: any): void => {
+  const currentBody = getNodes(doc, 'body')[0];
+  if (!currentBody) return;
+
+  const sectPrs = getNodes(doc, 'sectPr');
+  let sectPr = sectPrs.length > 0 ? sectPrs[sectPrs.length - 1] : null;
+
+  if (!sectPr || sectPr.parentNode !== currentBody) {
+    sectPr = doc.createElementNS(W_NS, 'w:sectPr');
+    currentBody.appendChild(sectPr);
+  }
+
+  const pgSz = getOrCreate(sectPr, 'w:pgSz');
+  setAttr(pgSz, 'w', '11906');
+  setAttr(pgSz, 'h', '16838');
+  setAttr(pgSz, 'orient', 'portrait');
+
+  const pgMar = getOrCreate(sectPr, 'w:pgMar');
+  setAttr(pgMar, 'top', cmToTwips(getMarginCm(opts, 'top', 2)));
+  setAttr(pgMar, 'bottom', cmToTwips(getMarginCm(opts, 'bottom', 2)));
+  setAttr(pgMar, 'left', cmToTwips(getMarginCm(opts, 'left', 3)));
+  setAttr(pgMar, 'right', cmToTwips(getMarginCm(opts, 'right', 1.5)));
+  setAttr(pgMar, 'header', '708');
+  setAttr(pgMar, 'footer', '708');
+  setAttr(pgMar, 'gutter', '0');
+
+  const cols = getOrCreate(sectPr, 'w:cols');
+  setAttr(cols, 'space', '708');
+
+  const docGrid = getOrCreate(sectPr, 'w:docGrid');
+  setAttr(docGrid, 'linePitch', '360');
+};
+
+export const removeChildrenByLocalName = (el: Element, names: string[]): void => {
+  const wanted = new Set(names);
+
+  Array.from(el.childNodes).forEach(child => {
+    if (child.nodeType !== 1) return;
+
+    const local = getLocalName(child);
+    if (wanted.has(local)) {
+      el.removeChild(child);
+    }
+  });
+};
+
+export const normalizeSectPrChildOrder = (sectPr: Element): void => {
+  const order = [
+    'headerReference',
+    'footerReference',
+    'footnotePr',
+    'endnotePr',
+    'type',
+    'pgSz',
+    'pgMar',
+    'paperSrc',
+    'pgBorders',
+    'lnNumType',
+    'pgNumType',
+    'cols',
+    'formProt',
+    'vAlign',
+    'noEndnote',
+    'titlePg',
+    'textDirection',
+    'bidi',
+    'rtlGutter',
+    'docGrid',
+    'printerSettings',
+    'sectPrChange'
+  ];
+
+  const children = Array.from(sectPr.childNodes).filter(
+    child => child.nodeType === 1
+  ) as Element[];
+
+  if (children.length <= 1) return;
+
+  const orderIndex = (el: Element): number => {
+    const local = getLocalName(el);
+    const idx = order.indexOf(local);
+    return idx >= 0 ? idx : 999;
+  };
+
+  const sorted = children
+    .map((el, index) => ({ el, index }))
+    .sort((a, b) => {
+      const diff = orderIndex(a.el) - orderIndex(b.el);
+      return diff !== 0 ? diff : a.index - b.index;
+    })
+    .map(item => item.el);
+
+  sorted.forEach(child => sectPr.appendChild(child));
+};
+
+export const ensureDefaultHeaderReferenceFirst = (
+  docRef: Document,
+  sectPr: Element
+): void => {
+  removeChildrenByLocalName(sectPr, ['headerReference']);
+
+  const headerRef = docRef.createElementNS(W_NS, 'w:headerReference');
+  setAttr(headerRef, 'type', 'default');
+  headerRef.setAttributeNS(
+    'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+    'r:id',
+    'rIdCustomHdr'
+  );
+
+  if (sectPr.firstChild) sectPr.insertBefore(headerRef, sectPr.firstChild);
+  else sectPr.appendChild(headerRef);
+
+  normalizeSectPrChildOrder(sectPr);
+};
+
+export const ensureFinalBodySectPr = (
+  docRef: Document,
+  targetBody: Element
+): Element => {
+  const directSectPr = Array.from(targetBody.childNodes).find(
+    child => child.nodeType === 1 && getLocalName(child) === 'sectPr'
+  ) as Element | undefined;
+
+  if (directSectPr) return directSectPr;
+
+  const sectPr = docRef.createElementNS(W_NS, 'w:sectPr');
+  targetBody.appendChild(sectPr);
+  return sectPr;
+};
