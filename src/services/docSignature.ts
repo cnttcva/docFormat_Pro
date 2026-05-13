@@ -51,55 +51,6 @@ const normalizeText = (value: string) => {
   return String(value || '').normalize('NFC').trim();
 };
 
-const normalizeOrgInfo = (options: any) => {
-  const org = options?.orgInfo || {};
-
-  const governingBody = normalizeText(
-    org.governingBody ||
-    org.parentAgency ||
-    options?.governingBody ||
-    options?.parentAgency ||
-    ''
-  );
-
-  const orgName = normalizeText(
-    org.orgName ||
-    org.schoolName ||
-    options?.orgName ||
-    options?.schoolName ||
-    ''
-  );
-
-  return {
-    governingBody,
-    orgName,
-    partyUpper: normalizeText(
-      org.partyUpper ||
-      options?.partyUpper ||
-      ''
-    ),
-    partyCell: normalizeText(
-      org.partyCell ||
-      options?.partyCell ||
-      orgName ||
-      ''
-    ),
-    location: normalizeText(
-      org.location ||
-      options?.location ||
-      ''
-    ),
-    departmentName: normalizeText(
-      org.departmentName ||
-      options?.departmentName ||
-      'TỔ CHUYÊN MÔN'
-    ),
-    receivers: Array.isArray(org.receivers)
-      ? org.receivers.filter((receiver: any) => normalizeText(receiver).length > 0)
-      : []
-  };
-};
-
 const cleanSignerTitle = (title: string): string => {
   if (!title) return '';
 
@@ -159,10 +110,35 @@ const normalizeReceiverEnd = (text: string, index: number, total: number, isPart
   return index === total - 1 ? `${cleanText}.` : `${cleanText};`;
 };
 
-const compactReceiverLines = (lines: Array<string | null | undefined>): string[] => {
-  return lines
-    .map(line => normalizeText(String(line || '')))
-    .filter(line => line.length > 0 && !/^[-\s]*$/.test(line));
+// FIX: pick non-empty string từ rawOrg, nếu trống/undefined thì dùng fallback.
+// Trước đây dùng `options.orgInfo || { ...defaults }` nên khi UI truyền orgInfo
+// có governingBody/orgName nhưng thiếu partyUpper/partyCell, header Đảng bị
+// mất 2 dòng "ĐẢNG BỘ ... / CHI BỘ ..." vì appendSmartLines nhận chuỗi rỗng.
+const buildOrgWithDefaults = (rawOrg: any) => {
+  const orgDefaults = {
+    governingBody: 'UBND XÃ EA KAR',
+    orgName: 'TRƯỜNG THCS CHU VĂN AN',
+    partyUpper: 'ĐẢNG BỘ XÃ EA KAR',
+    partyCell: 'CHI BỘ TRƯỜNG THCS CHU VĂN AN',
+    location: 'Ea Kar',
+    departmentName: 'TỔ CHUYÊN MÔN'
+  };
+
+  const pickNonEmpty = (val: any, fallback: string): string => {
+    const s = String(val || '').trim();
+    return s.length > 0 ? s : fallback;
+  };
+
+  const safe = rawOrg || {};
+
+  return {
+    governingBody: pickNonEmpty(safe.governingBody, orgDefaults.governingBody),
+    orgName: pickNonEmpty(safe.orgName, orgDefaults.orgName),
+    partyUpper: pickNonEmpty(safe.partyUpper, orgDefaults.partyUpper),
+    partyCell: pickNonEmpty(safe.partyCell, orgDefaults.partyCell),
+    location: pickNonEmpty(safe.location, orgDefaults.location),
+    departmentName: pickNonEmpty(safe.departmentName, orgDefaults.departmentName)
+  };
 };
 
 const generateSmartReceivers = (headerType: HeaderType, docType: string, org: any, options: any): string[] => {
@@ -221,22 +197,16 @@ const generateSmartReceivers = (headerType: HeaderType, docType: string, org: an
   }
 
   // III. VĂN BẢN HÀNH CHÍNH NHÀ TRƯỜNG
-  // Không khóa cứng địa phương. Ưu tiên danh sách nơi nhận đã đăng ký trong orgInfo.
+  // KHOÁ CỨNG NƠI NHẬN, KHÔNG DÙNG "- Như trên"
   if (headerType === HeaderType.SCHOOL) {
-    if (Array.isArray(org.receivers) && org.receivers.length > 0) {
-      return compactReceiverLines(org.receivers);
-    }
-
-    const receivers = compactReceiverLines([
-      org.governingBody ? `- ${org.governingBody}` : null,
+    return [
+      `- UBND xã Ea Kar`,
       `- Phòng Văn hoá - Xã hội (b/c)`,
       `- Lãnh đạo trường`,
       `- Các Tổ chuyên môn`,
       `- Các bộ phận liên quan`,
       `- Lưu: VT`
-    ]);
-
-    return receivers.length > 0 ? receivers : [`- Lưu: VT`];
+    ];
   }
 
   return [`- Lưu: VT`];
@@ -245,7 +215,9 @@ const generateSmartReceivers = (headerType: HeaderType, docType: string, org: an
 export const createHeaderTemplate = (doc: Document, options: any): Element => {
   const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
 
-  const org = normalizeOrgInfo(options);
+  // FIX: merge per-field thay vì `options.orgInfo || {defaults}` để tránh
+  // mất header khi orgInfo có một số field nhưng thiếu partyUpper/partyCell.
+  const org = buildOrgWithDefaults(options.orgInfo);
 
   const createStyledP = (
     text: string,
@@ -551,9 +523,7 @@ export const createHeaderTemplate = (doc: Document, options: any): Element => {
   const day = String(docDate.getDate());
   const month = String(docDate.getMonth() + 1);
   const year = docDate.getFullYear();
-  const currentDateStr = org.location
-    ? `${org.location}, ngày ${day} tháng ${month} năm ${year}`
-    : `Ngày ${day} tháng ${month} năm ${year}`;
+  const currentDateStr = `${org.location}, ngày ${day} tháng ${month} năm ${year}`;
 
   const congVanSummaryLines = formatCongVanSummary(options.congVanSummary);
 
@@ -647,7 +617,8 @@ export const createHeaderTemplate = (doc: Document, options: any): Element => {
 export const createSignatureBlock = (doc: Document, options: any, docType: string): Element => {
   const createElement = (tagName: string) => doc.createElementNS(W_NS, tagName);
 
-  const org = normalizeOrgInfo(options);
+  // FIX: dùng cùng helper merge để tránh thiếu field gây ra dòng rỗng/nội dung sai.
+  const org = buildOrgWithDefaults(options.orgInfo);
 
   const createTightP = (
     text: string,

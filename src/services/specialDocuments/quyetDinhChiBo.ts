@@ -1832,6 +1832,116 @@ const removeExistingSignatureAndReceivers = (doc: Document): void => {
   }
 };
 
+// ===========================================================================
+// FIX v3:
+// (1) Dọn page break + bảng/đoạn header Đảng "mồ côi" giữa phần Quyết định
+//     và phần phụ lục thật (QUY CHẾ, QUY ĐỊNH, NỘI QUY, ...).
+//     Lý do: Ở file gốc, đoạn Quyết định kết thúc bằng 1 BẢNG chứa Nơi nhận +
+//     chữ ký, kế đến là 1 paragraph chỉ chứa <w:br type="page"/>, rồi tới 1
+//     BẢNG header Đảng của phụ lục, rồi mới đến "QUY CHẾ".
+//     removeExistingSignatureAndReceivers chỉ xóa BẢNG Nơi nhận, KHÔNG đụng
+//     đến page break và bảng header Đảng. Hệ quả: chèn signatureBlock mới
+//     sai vị trí và sinh ra 3 trang rời.
+// (2) Format lại đường "-----" trong phần phụ lục về căn giữa, không thụt
+//     đầu dòng, vì file gốc giữ nguyên jc=both + firstLine=720 cho dòng này.
+// ===========================================================================
+
+const cleanOrphansBetweenDecisionAndAttachment = (doc: Document): void => {
+  const body = getBody(doc);
+  if (!body) return;
+
+  const blocks = getDirectBodyBlocks(body);
+  let commandSeen = false;
+
+  for (const block of blocks) {
+    const text = getText(block);
+
+    if (!commandSeen) {
+      if (isParagraph(block) && isDecisionAuthorityLine(text)) commandSeen = true;
+      continue;
+    }
+
+    if (isSectPr(block)) break;
+
+    // Dừng ngay khi gặp điểm bắt đầu phụ lục thực sự
+    if (isParagraph(block) && (isAttachmentTitleLine(text) || isAttachmentNoteStartLine(text))) {
+      break;
+    }
+
+    if (isParagraph(block)) {
+      const brs = Array.from(block.getElementsByTagNameNS(W_NS, 'br')) as Element[];
+      const hasPageBreak = brs.some(br => br.getAttribute('w:type') === 'page');
+
+      if (hasPageBreak) {
+        if (!text) {
+          // Paragraph chỉ chứa page break → xóa cả paragraph
+          removeNodeIfChildOf(body, block);
+          continue;
+        }
+        // Paragraph có text + page break → chỉ gỡ <w:br type="page"/>
+        brs.forEach(br => {
+          if (br.getAttribute('w:type') === 'page' && br.parentNode) {
+            br.parentNode.removeChild(br);
+          }
+        });
+      }
+      continue;
+    }
+
+    // Bảng header Đảng "mồ côi" còn sót (Đảng bộ / Chi bộ / Đảng cộng sản Việt Nam)
+    // — không phải bảng dữ liệu thực sự → xóa
+    if (isTable(block)) {
+      const tNorm = normalizeForDetect(text);
+      const looksLikePartyHeaderTable =
+        (
+          tNorm.includes('DANG CONG SAN VIET NAM') ||
+          tNorm.includes('DANG BO') ||
+          tNorm.includes('CHI BO') ||
+          tNorm.includes('DANG UY')
+        ) && !isLikelyDataTableBlock(block);
+
+      if (looksLikePartyHeaderTable) {
+        removeNodeIfChildOf(body, block);
+      }
+    }
+  }
+};
+
+const normalizeDecorativeLinesInAttachment = (
+  doc: Document,
+  attachmentStart: Element | null
+): void => {
+  if (!attachmentStart) return;
+
+  const body = getBody(doc);
+  if (!body) return;
+
+  const blocks = getDirectBodyBlocks(body);
+  const startIndex = blocks.indexOf(attachmentStart);
+  if (startIndex < 0) return;
+
+  for (let i = startIndex; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (isSectPr(block)) break;
+    if (!isParagraph(block)) continue;
+
+    const text = getText(block);
+    if (!text) continue;
+    if (isNoiNhanLine(text) || isSignerLine(text)) break;
+    if (!isDecorativeLine(text)) continue;
+
+    hardResetParagraphAsSingleRun(doc, block, '-----', {
+      align: 'center',
+      size: 14,
+      before: '0',
+      after: '120',
+      line: '240',
+      firstLine: '0',
+      left: '0'
+    });
+  }
+};
+
 const isChapterLine = (text: string): boolean => {
   const t = normalizeForDetect(text);
   return /^CHUONG\s+[IVXLCDM0-9]+/.test(t);
@@ -2881,12 +2991,19 @@ export const insertQuyetDinhChiBoSignatureBlock = (
   normalizeAllChapterTitlesInBody(doc);
   removeExistingSignatureAndReceivers(doc);
 
+  // FIX v3 (1): dọn page break + bảng header Đảng "mồ côi" còn sót lại
+  // sau khi đã xóa bảng "Nơi nhận" cũ, trước khi đi tìm điểm bắt đầu phụ lục.
+  cleanOrphansBetweenDecisionAndAttachment(doc);
+
   const detectedAttachmentStart = findAttachmentStartAfterDecisionEnding(doc);
 
   if (detectedAttachmentStart) {
     normalizeAttachmentHeadings(doc, detectedAttachmentStart);
     normalizeAttachmentMainTitleCluster(doc, detectedAttachmentStart);
     normalizeAttachmentChapterTitlesHard(doc, detectedAttachmentStart, options);
+
+    // FIX v3 (2): căn giữa lại dòng "-----" trong phụ lục (trước khi extract)
+    normalizeDecorativeLinesInAttachment(doc, detectedAttachmentStart);
 
     const attachmentFragment = extractBodyBlocksFrom(doc, body, detectedAttachmentStart);
 
@@ -2908,6 +3025,10 @@ export const insertQuyetDinhChiBoSignatureBlock = (
     normalizeAttachmentHeadings(doc, refreshedAttachmentStart);
     normalizeAttachmentMainTitleCluster(doc, refreshedAttachmentStart);
     normalizeAttachmentChapterTitlesHard(doc, refreshedAttachmentStart, options);
+
+    // FIX v3 (2): căn giữa lại "-----" sau khi đã đưa fragment về vị trí mới
+    normalizeDecorativeLinesInAttachment(doc, refreshedAttachmentStart);
+
     normalizeAllChapterTitlesInBody(doc);
     insertAttachmentSignatureBlockIfNeeded(doc, options, docType, refreshedAttachmentStart);
     normalizeAttachmentEndingAndEnsureSignature(doc, options, docType);
