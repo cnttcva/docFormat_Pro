@@ -78,49 +78,19 @@ export const forceParagraphBold = (pPr: Element) => {
 };
 
 export const smartNormalizeText = (text: string): string => {
-    let t = String(text || '').normalize('NFC').trim();
+    let t = text.trim();
     if (!t) return "";
-
-    return t
-        .split(/\s+/)
-        .map((word, index) => {
-            const rawWord = word.normalize('NFC');
-
-            const leading = rawWord.match(/^[^\p{L}\p{N}]+/u)?.[0] || '';
-            const trailing = rawWord.match(/[^\p{L}\p{N}]+$/u)?.[0] || '';
-            const core = rawWord.slice(
-                leading.length,
-                rawWord.length - trailing.length
-            );
-
-            if (!core) return rawWord;
-
-            const upperCore = core.toLocaleUpperCase('vi-VN');
-
-            // Giữ nguyên từ viết tắt theo danh mục chuẩn.
-            if (ACRONYMS_LIST.includes(upperCore)) {
-                return leading + upperCore + trailing;
-            }
-
-            // Giữ nguyên mã/số/ký hiệu như 2025, 2025-2026, 01/KH, QĐ-UBND...
-            if (/[0-9\/\-]/.test(core)) {
-                return rawWord;
-            }
-
-            const lowerCore = core.toLocaleLowerCase('vi-VN');
-
-            if (index === 0) {
-                return (
-                    leading +
-                    lowerCore.charAt(0).toLocaleUpperCase('vi-VN') +
-                    lowerCore.slice(1) +
-                    trailing
-                );
-            }
-
-            return leading + lowerCore + trailing;
-        })
-        .join(' ');
+    const lowerRegex = /[a-zàáâãèéêìíòóôõùúăđĩũơưạảấầẩẫậắằẳẵặẹẻẽềềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳýỷỹỵ]/;
+    const specialRegex = /[0-9\-\/]/;
+    t = t.split(/\s+/).map(word => {
+        if (lowerRegex.test(word) || specialRegex.test(word)) return word;
+        return word.replace(/[A-ZÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐĨŨƠƯẠẢẤẦẨẪẬẮẰẲẴẶẸẺẼỀỀỂỄỆỈỊỌỎỐỒỔỖỘỚỜỞỠỢỤỦỨỪỬỮỰỲÝỶỸỴ]+/g, (match) => {
+            if (ACRONYMS_LIST.includes(match)) return match;
+            return match.toLowerCase();
+        });
+    }).join(' ');
+    if (t.length > 0) t = t.charAt(0).toUpperCase() + t.slice(1);
+    return t;
 };
 
 export const normalizeSummary = (text: string): string => {

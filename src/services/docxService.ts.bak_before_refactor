@@ -1,0 +1,3427 @@
+// File: src/services/docxService.ts
+import JSZip from 'jszip';
+import { ProcessResult, DocxOptions, HeaderType } from '../types';
+import {
+    W_NS, TWIPS_PER_CM, TWIPS_PER_PT, DOC_TYPE_KEYWORDS, DEFAULT_OPTIONS,
+    getNodes, getOrCreate, setAttr, forceBoldNode, forceParagraphBold, removeBoldNode,
+    isTableParagraph, isParagraphBold, normalizeSummary, cleanPunctuation, enforceSchema
+} from './docUtils';
+import { normalizeTables } from './docTable';
+import { createHeaderTemplate, createSignatureBlock } from './docSignature';
+import { insertSpecialDocumentSignatureBlock } from './specialDocuments';
+import { autoCorrectText } from './textCorrector';
+import { formatPageStructure } from './docPageLayout';
+import { coreSmartFormat } from './docTextProcessor';
+
+import { cleanHeader, cleanTail, trimParagraphs } from './docCleaner';
+import { extractReceivers } from './docExtractor';
+
+// 🔥 MỤC TIÊU 1: NÂNG CẤP LÕI NHẬN DIỆN TỪ ĐIỂN ĐÁM MÂY
+export const processDocx = async (file: File, options: DocxOptions, dictionary: any[] = []): Promise<ProcessResult> => {
+  const logs: string[] = [];
+  const finalOptions = { ...DEFAULT_OPTIONS, ...options };
+
+  // 🛡️ TRẠM KIỂM SOÁT TỪ VỰNG TỪ ĐÁM MÂY
+  const applyCloudDictionary = (text: string) => {
+    if (!text || !dictionary || dictionary.length === 0) return text;
+    let newText = text;
+
+    dictionary.forEach(entry => {
+      if (entry.wrong && entry.right) {
+        const escapedWrong = entry.wrong.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escapedWrong, 'g');
+        newText = newText.replace(regex, entry.right);
+      }
+    });
+
+    return newText;
+  };
+
+  try {
+    logs.push(`Loading file: ${file.name}`);
+
+    const arrayBuffer = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const docXmlPath = "word/document.xml";
+    const docXmlContent = await zip.file(docXmlPath)?.async("string");
+
+    if (!docXmlContent) throw new Error("Invalid DOCX");
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(docXmlContent, "application/xml");
+    const body = getNodes(doc, "body")[0];
+
+    /**
+     * CẦU NỐI SỚM CHO QUYẾT ĐỊNH CHI BỘ
+     * ------------------------------------------------
+     * Ép HeaderType.PARTY trước các bước cleanHeader/createHeaderTemplate.
+     * Nếu không ép sớm, văn bản Chi bộ có thể bị xử lý nhầm như Quyết định nhà trường.
+     */
+    const normalizeEarlyForChiBoDecision = (value: string): string => {
+      return String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[Đđ]/g, "D")
+        .replace(/[-_]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+    };
+
+    const earlyBodyTextForChiBoDecision = normalizeEarlyForChiBoDecision(body?.textContent || "");
+    const earlyDocTypeForChiBoDecision = normalizeEarlyForChiBoDecision(String((finalOptions as any).docType || ""));
+    const earlySpecialTypeForChiBoDecision = normalizeEarlyForChiBoDecision(String((finalOptions as any).specialDocumentType || ""));
+    const earlyHeaderTypeForChiBoDecision = normalizeEarlyForChiBoDecision(String((finalOptions as any).headerType || ""));
+
+    const isEarlyChiBoDecision =
+      finalOptions.isDecision === true &&
+      (
+        earlyBodyTextForChiBoDecision.includes("CHI BO QUYET DINH") ||
+        earlyBodyTextForChiBoDecision.includes("CAP UY CHI BO") ||
+        earlyBodyTextForChiBoDecision.includes("CHI UY CHI BO") ||
+        earlyBodyTextForChiBoDecision.includes("CHI BO TRUONG") ||
+        earlyBodyTextForChiBoDecision.includes("DANG UY XA") ||
+        earlyDocTypeForChiBoDecision.includes("CHI BO") ||
+        earlyDocTypeForChiBoDecision.includes("CAP UY CHI BO") ||
+        earlySpecialTypeForChiBoDecision.includes("CHI BO") ||
+        earlySpecialTypeForChiBoDecision.includes("CAP UY CHI BO") ||
+        earlyHeaderTypeForChiBoDecision.includes("PARTY") ||
+        earlyHeaderTypeForChiBoDecision.includes("DANG") ||
+        earlyHeaderTypeForChiBoDecision.includes("CHI BO") ||
+        (
+          earlyBodyTextForChiBoDecision.includes("DANG CONG SAN VIET NAM") &&
+          earlyBodyTextForChiBoDecision.includes("CHI BO")
+        )
+      );
+
+    if (isEarlyChiBoDecision) {
+      (finalOptions as any).headerType = HeaderType.PARTY;
+      (finalOptions as any).isChiBoDecision = true;
+      (finalOptions as any).isPartyDecision = true;
+      (finalOptions as any).specialDocumentType =
+        (finalOptions as any).specialDocumentType || "quyet-dinh-chi-bo";
+      (finalOptions as any).docType =
+        (finalOptions as any).docType || "Quyết định của cấp ủy chi bộ Đảng";
+
+      logs.push("QuyetDinhChiBo EARLY: forced HeaderType.PARTY before clean/header pipeline");
+    }
+
+    const parseCmValue = (value: any, fallback: number): number => {
+      if (typeof value === "number" && !Number.isNaN(value)) return value;
+
+      if (typeof value === "string") {
+        const normalized = value.replace(",", ".").trim();
+        const parsed = Number(normalized);
+        if (!Number.isNaN(parsed)) return parsed;
+      }
+
+      return fallback;
+    };
+
+    const getMarginCm = (
+      opts: any,
+      key: "top" | "bottom" | "left" | "right",
+      fallback: number
+    ): number => {
+      return parseCmValue(
+        opts?.margins?.[key] ??
+        opts?.margin?.[key] ??
+        opts?.pageMargins?.[key] ??
+        opts?.page?.margins?.[key] ??
+        opts?.page?.margin?.[key] ??
+        opts?.page?.[key] ??
+        opts?.[key],
+        fallback
+      );
+    };
+
+    const cmToTwips = (cm: number): string => {
+      return String(Math.round(cm * TWIPS_PER_CM));
+    };
+
+    const forceFinalPageMargins = (doc: Document, opts: any): void => {
+      const currentBody = getNodes(doc, "body")[0];
+      if (!currentBody) return;
+
+      let sectPrs = getNodes(doc, "sectPr");
+      let sectPr = sectPrs.length > 0 ? sectPrs[sectPrs.length - 1] : null;
+
+      if (!sectPr || sectPr.parentNode !== currentBody) {
+        sectPr = doc.createElementNS(W_NS, "w:sectPr");
+        currentBody.appendChild(sectPr);
+      }
+
+      const pgSz = getOrCreate(sectPr, "w:pgSz");
+      setAttr(pgSz, "w", "11906");
+      setAttr(pgSz, "h", "16838");
+      setAttr(pgSz, "orient", "portrait");
+
+      const pgMar = getOrCreate(sectPr, "w:pgMar");
+      setAttr(pgMar, "top", cmToTwips(getMarginCm(opts, "top", 2)));
+      setAttr(pgMar, "bottom", cmToTwips(getMarginCm(opts, "bottom", 2)));
+      setAttr(pgMar, "left", cmToTwips(getMarginCm(opts, "left", 3)));
+      setAttr(pgMar, "right", cmToTwips(getMarginCm(opts, "right", 1.5)));
+      setAttr(pgMar, "header", "708");
+      setAttr(pgMar, "footer", "708");
+      setAttr(pgMar, "gutter", "0");
+
+      const cols = getOrCreate(sectPr, "w:cols");
+      setAttr(cols, "space", "708");
+
+      const docGrid = getOrCreate(sectPr, "w:docGrid");
+      setAttr(docGrid, "linePitch", "360");
+    };
+
+
+
+    /**
+     * QUYẾT ĐỊNH NHÀ TRƯỜNG CÓ VĂN BẢN BAN HÀNH KÈM THEO
+     * ------------------------------------------------------
+     * Nguyên tắc bảo toàn tuyệt đối:
+     * - Phần chính của Quyết định kết thúc tại điều khoản thi hành/hiệu lực.
+     * - Mọi block nội dung thật phía sau điều khoản đó không thuộc phần chính.
+     * - Tách nguyên khối phần ngoài phần chính ra khỏi document trước khi chạy các
+     *   bước clean/format chung, để không hàm nào có cơ hội xóa bảng/phụ lục.
+     * - Sau khi đã chèn chữ ký Quyết định, gắn nguyên khối này trở lại sau ngắt trang.
+     */
+    const normalizeForSpecialDecisionDetect = (value: string): string => {
+      return String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[Đđ]/g, "D")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+    };
+
+    const getLocalNameForSpecialDecision = (node: Node): string => {
+      const name = (node as Element).localName || node.nodeName || "";
+      return name.includes(":") ? name.split(":").pop() || name : name;
+    };
+
+    const getDirectBodyBlocksForSpecialDecision = (targetBody: Element): Element[] => {
+      return Array.from(targetBody.childNodes).filter(
+        (node): node is Element => node.nodeType === 1
+      );
+    };
+
+    const getBlockTextForSpecialDecision = (node: Node | null | undefined): string => {
+      return String(node?.textContent || "").replace(/\s+/g, " ").trim();
+    };
+
+    const isEmptyOrNonContentBlockForSpecialDecision = (block: Element): boolean => {
+      const localName = getLocalNameForSpecialDecision(block);
+      if (localName === "sectPr") return true;
+
+      const text = getBlockTextForSpecialDecision(block);
+      if (!text) return true;
+
+      const normalized = normalizeForSpecialDecisionDetect(text);
+      if (/^[0-9]{1,3}$/.test(normalized)) return true;
+      if (/^[\s*._\-–—=]+$/.test(text)) return true;
+
+      return false;
+    };
+
+    const isMainDecisionCommandForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return t === "QUYET DINH:" || t === "QUYET DINH";
+    };
+
+    const isArticleLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return /^DIEU\s+\d+[\.:]/.test(t) || /^DIEU\s+\d+\s+/.test(t);
+    };
+
+    const isMainDecisionEndingTextForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+
+      return (
+        t.includes("CAN CU QUYET DINH THI HANH") ||
+        t.includes("CAN CU QUYET DINH NAY THI HANH") ||
+        t.includes("QUYET DINH NAY CO HIEU LUC") ||
+        t.includes("CO HIEU LUC KE TU NGAY KY") ||
+        t.includes("KE TU NGAY KY") ||
+        t.includes("CHIU TRACH NHIEM THI HANH QUYET DINH NAY") ||
+        t.includes("CHIU TRACH NHIEM THI HANH") ||
+        t.includes("QUYET DINH THI HANH") ||
+        t.includes("THI HANH QUYET DINH NAY") ||
+        t.includes("CAN CU QUYET DINH THI HANH")
+      );
+    };
+
+    const isSchoolDecisionForPreserveAttachment = (): boolean => {
+      if (finalOptions.headerType !== HeaderType.SCHOOL) return false;
+
+      const allText = getBlockTextForSpecialDecision(body);
+      const normalized = normalizeForSpecialDecisionDetect(allText);
+
+      return finalOptions.isDecision === true || normalized.includes("QUYET DINH");
+    };
+
+    type PreservedAttachmentBoundaryForSpecialDecision = {
+      ending: Element;
+      start: Element;
+    };
+
+    const isAttachmentNoteForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return t.includes("BAN HANH KEM THEO") && t.includes("QUYET DINH");
+    };
+
+    const isNoiNhanLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return t === "NOI NHAN" || t === "NOI NHAN:" || t.startsWith("NOI NHAN:");
+    };
+
+    const isSignerLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return (
+        t === "HIEU TRUONG" ||
+        t === "PHO HIEU TRUONG" ||
+        t.startsWith("KT.") ||
+        t.startsWith("TM.") ||
+        t.startsWith("T/M ")
+      );
+    };
+
+    const isAdministrativeHeaderBlockForSpecialDecision = (block: Element): boolean => {
+      const t = normalizeForSpecialDecisionDetect(getBlockTextForSpecialDecision(block));
+      if (!t) return false;
+
+      return (
+        t.includes("CONG HOA XA HOI CHU NGHIA VIET NAM") ||
+        t.includes("DOC LAP") && t.includes("TU DO") && t.includes("HANH PHUC") ||
+        t.startsWith("UBND ") ||
+        t.includes("UY BAN NHAN DAN") ||
+        t.startsWith("TRUONG ") ||
+        t.includes("PHONG GIAO DUC") ||
+        t.includes("SO GIAO DUC")
+      );
+    };
+
+    const isDateLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return t.length < 160 && t.includes("NGAY") && t.includes("THANG") && t.includes("NAM");
+    };
+
+    const isLikelyAttachmentTitleForSpecialDecision = (text: string): boolean => {
+      const raw = String(text || "").replace(/\s+/g, " ").trim();
+      const t = normalizeForSpecialDecisionDetect(text);
+      if (!t) return false;
+      if (t.length > 220) return false;
+      if (isArticleLineForSpecialDecision(text)) return false;
+      if (isMainDecisionCommandForSpecialDecision(text)) return false;
+      if (isMainDecisionEndingTextForSpecialDecision(text)) return false;
+      if (isNoiNhanLineForSpecialDecision(text)) return false;
+      if (isSignerLineForSpecialDecision(text)) return false;
+      if (isDateLineForSpecialDecision(text)) return false;
+      if (t.startsWith("V/V") || t.startsWith("VE VIEC")) return false;
+
+      const keywordHit =
+        t.startsWith("QUY CHE") ||
+        t.startsWith("QUY DINH") ||
+        t.startsWith("NOI QUY") ||
+        t.startsWith("DANH SACH") ||
+        t.startsWith("PHU LUC") ||
+        t.startsWith("KE HOACH") ||
+        t.startsWith("THE LE") ||
+        t.startsWith("DANH MUC") ||
+        t.includes("BANG PHAN CONG") ||
+        t.includes("PHAN CONG") ||
+        t.includes("HOI DONG") ||
+        t.includes("LICH") ||
+        t.includes("CHUONG TRINH") ||
+        t.includes("HOC SINH") ||
+        t.includes("CBGVNV");
+
+      if (keywordHit) return true;
+
+      const letters = String(raw || text).replace(/[^A-Za-zÀ-ỹĐđ]/g, "");
+      const isMostlyUppercase = letters.length >= 8 && letters === letters.toUpperCase();
+      return isMostlyUppercase;
+    };
+
+    const isLikelyDataTableForSpecialDecision = (block: Element): boolean => {
+      if (getLocalNameForSpecialDecision(block) !== "tbl") return false;
+      const t = normalizeForSpecialDecisionDetect(getBlockTextForSpecialDecision(block));
+      return (
+        t.includes("HO VA TEN") ||
+        t.includes("CHUC VU") ||
+        t.includes("NHIEM VU") ||
+        t.includes("GHI CHU") ||
+        t.includes("THOI GIAN") ||
+        t.includes("DIA DIEM") ||
+        t.includes("NOI DUNG") ||
+        t.length > 120
+      );
+    };
+
+    const isIgnorableBetweenEndingAndAttachmentForSpecialDecision = (block: Element): boolean => {
+      if (isEmptyOrNonContentBlockForSpecialDecision(block)) return true;
+      const text = getBlockTextForSpecialDecision(block);
+      if (isNoiNhanLineForSpecialDecision(text)) return true;
+      if (isSignerLineForSpecialDecision(text)) return true;
+      if (isAdministrativeHeaderBlockForSpecialDecision(block)) return true;
+      if (isDateLineForSpecialDecision(text)) return true;
+
+      const t = normalizeForSpecialDecisionDetect(text);
+      if (/^-\s*/.test(text) && text.length < 120) return true;
+      if (t.includes("LUU:") || t.startsWith("LUU ")) return true;
+
+      return false;
+    };
+
+    const findHeadingStartBeforeAttachmentNoteForSpecialDecision = (
+      blocks: Element[],
+      noteIndex: number,
+      endingIndex: number
+    ): Element | null => {
+      let candidate: Element | null = null;
+      let skippedSubTitleLines = 0;
+
+      for (let i = noteIndex - 1; i > endingIndex; i--) {
+        const block = blocks[i];
+        const text = getBlockTextForSpecialDecision(block);
+        if (isEmptyOrNonContentBlockForSpecialDecision(block)) continue;
+        if (isNoiNhanLineForSpecialDecision(text) || isSignerLineForSpecialDecision(text)) break;
+        if (isAdministrativeHeaderBlockForSpecialDecision(block)) break;
+        if (isArticleLineForSpecialDecision(text)) break;
+
+        if (isLikelyAttachmentTitleForSpecialDecision(text)) {
+          candidate = block;
+          continue;
+        }
+
+        // Cho phép các dòng phụ đề nằm giữa tiêu đề và dòng ghi chú kèm theo.
+        if (text.length <= 180 && skippedSubTitleLines < 4) {
+          skippedSubTitleLines += 1;
+          continue;
+        }
+
+        break;
+      }
+
+      return candidate;
+    };
+
+    const hasAttachmentEvidenceNearbyForSpecialDecision = (
+      blocks: Element[],
+      startIndex: number,
+      endingIndex: number
+    ): boolean => {
+      const to = Math.min(blocks.length, startIndex + 14);
+      for (let i = startIndex; i < to; i++) {
+        const block = blocks[i];
+        const text = getBlockTextForSpecialDecision(block);
+        if (isAttachmentNoteForSpecialDecision(text)) return true;
+        if (isLikelyDataTableForSpecialDecision(block)) return true;
+        if (i > startIndex && isArticleLineForSpecialDecision(text)) return true;
+
+        if (i > startIndex && isNoiNhanLineForSpecialDecision(text)) return false;
+        if (i > startIndex && isSignerLineForSpecialDecision(text)) return false;
+        if (i > startIndex && isMainDecisionEndingTextForSpecialDecision(text)) return false;
+      }
+
+      // Nếu tiêu đề nằm sau điều kết thúc và trước đó không còn nội dung quyết định,
+      // vẫn chấp nhận để bảo toàn phần ngoài Quyết định chính.
+      return startIndex > endingIndex;
+    };
+
+    const findPreservedAttachmentStartAfterMainDecision = (targetBody: Element): PreservedAttachmentBoundaryForSpecialDecision | null => {
+      if (!isSchoolDecisionForPreserveAttachment()) return null;
+
+      const blocks = getDirectBodyBlocksForSpecialDecision(targetBody);
+      let decisionCommandIndex = -1;
+      let endingArticleIndex = -1;
+
+      for (let i = 0; i < blocks.length; i++) {
+        const text = getBlockTextForSpecialDecision(blocks[i]);
+        if (!text) continue;
+
+        if (decisionCommandIndex < 0 && isMainDecisionCommandForSpecialDecision(text)) {
+          decisionCommandIndex = i;
+          continue;
+        }
+
+        if (
+          decisionCommandIndex >= 0 &&
+          isArticleLineForSpecialDecision(text) &&
+          isMainDecisionEndingTextForSpecialDecision(text)
+        ) {
+          endingArticleIndex = i;
+        }
+      }
+
+      if (endingArticleIndex < 0) return null;
+
+      // Ưu tiên bằng chứng chắc nhất: dòng "(Ban hành kèm theo Quyết định số...)".
+      // Nếu gặp dòng này, quét ngược để lấy cả tiêu đề/phụ đề của văn bản kèm theo.
+      for (let i = endingArticleIndex + 1; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (getLocalNameForSpecialDecision(block) === "sectPr") break;
+        const text = getBlockTextForSpecialDecision(block);
+        if (isAttachmentNoteForSpecialDecision(text)) {
+          const headingStart = findHeadingStartBeforeAttachmentNoteForSpecialDecision(blocks, i, endingArticleIndex);
+          return {
+            ending: blocks[endingArticleIndex],
+            start: headingStart || block
+          };
+        }
+      }
+
+      // Fallback: tìm tiêu đề thực sự của văn bản kèm theo, bỏ qua Nơi nhận/chữ ký/header cũ.
+      for (let i = endingArticleIndex + 1; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (getLocalNameForSpecialDecision(block) === "sectPr") break;
+        const text = getBlockTextForSpecialDecision(block);
+
+        if (isEmptyOrNonContentBlockForSpecialDecision(block)) continue;
+        if (isNoiNhanLineForSpecialDecision(text) || isSignerLineForSpecialDecision(text)) continue;
+        if (isAdministrativeHeaderBlockForSpecialDecision(block)) continue;
+        if (isDateLineForSpecialDecision(text)) continue;
+
+        if (
+          isLikelyAttachmentTitleForSpecialDecision(text) &&
+          hasAttachmentEvidenceNearbyForSpecialDecision(blocks, i, endingArticleIndex)
+        ) {
+          return {
+            ending: blocks[endingArticleIndex],
+            start: block
+          };
+        }
+
+        if (isLikelyDataTableForSpecialDecision(block)) {
+          return {
+            ending: blocks[endingArticleIndex],
+            start: block
+          };
+        }
+      }
+
+      return null;
+    };
+
+    const removeBlocksBetweenMainEndingAndAttachment = (
+      targetBody: Element,
+      endingBlock: Element,
+      attachmentStart: Element
+    ): void => {
+      let current = endingBlock.nextSibling;
+      while (current && current !== attachmentStart) {
+        const next = current.nextSibling;
+        targetBody.removeChild(current);
+        current = next;
+      }
+    };
+
+    const extractPreservedBlocksFrom = (
+      docRef: Document,
+      targetBody: Element,
+      startBlock: Element
+    ): DocumentFragment => {
+      const fragment = docRef.createDocumentFragment();
+      let current: ChildNode | null = startBlock;
+
+      while (current) {
+        const next = current.nextSibling;
+        const isElement = current.nodeType === 1;
+        const localName = isElement ? getLocalNameForSpecialDecision(current) : "";
+
+        if (localName === "sectPr") break;
+
+        fragment.appendChild(current);
+        current = next;
+      }
+
+      return fragment;
+    };
+
+    const insertBeforeSectPrOrAppendToBody = (targetBody: Element, node: Node): void => {
+      const children = Array.from(targetBody.childNodes);
+      const sectPr = children.find(child =>
+        child.nodeType === 1 && getLocalNameForSpecialDecision(child) === "sectPr"
+      );
+
+      if (sectPr) targetBody.insertBefore(node, sectPr);
+      else targetBody.appendChild(node);
+    };
+
+    const createSimpleParagraphForAttachmentHeader = (
+      docRef: Document,
+      text: string,
+      optionsForP: {
+        bold?: boolean;
+        align?: "left" | "center" | "right" | "both";
+        size?: number;
+      } = {}
+    ): Element => {
+      const p = docRef.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(p, "w:pPr");
+
+      const jc = getOrCreate(pPr, "w:jc");
+      setAttr(jc, "val", optionsForP.align || "center");
+
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "0");
+      setAttr(spacing, "after", "0");
+      setAttr(spacing, "line", "240");
+      setAttr(spacing, "lineRule", "auto");
+
+      const r = docRef.createElementNS(W_NS, "w:r");
+      const rPr = getOrCreate(r, "w:rPr");
+
+      const sizeVal = String((optionsForP.size || 13) * 2);
+      const sz = getOrCreate(rPr, "w:sz");
+      setAttr(sz, "val", sizeVal);
+      const szCs = getOrCreate(rPr, "w:szCs");
+      setAttr(szCs, "val", sizeVal);
+
+      if (optionsForP.bold) {
+        forceBoldNode(rPr);
+        forceParagraphBold(pPr);
+      }
+
+      const t = docRef.createElementNS(W_NS, "w:t");
+      t.textContent = text;
+      r.appendChild(t);
+      p.appendChild(r);
+
+      return p;
+    };
+
+    /**
+     * Tạo ngắt SECTION trước phần “Văn bản ban hành kèm theo”.
+     *
+     * Không dùng w:br type="page" ở đây, vì nếu phần kèm theo có bảng/trang
+     * ngang thì Word sẽ áp sectPr landscape nằm cuối phần kèm theo cho toàn bộ
+     * phần trước nó. Section break portrait này chốt phần Quyết định chính ở
+     * khổ dọc, sau đó section kế tiếp mới nhận orientation riêng của phần kèm theo.
+     */
+    const createPortraitSectionBreakBeforePreservedAttachment = (docRef: Document, opts: any): Element => {
+      const p = docRef.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(p, "w:pPr");
+
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "0");
+      setAttr(spacing, "after", "0");
+      setAttr(spacing, "line", "240");
+      setAttr(spacing, "lineRule", "auto");
+
+      const sectPr = getOrCreate(pPr, "w:sectPr");
+
+      const type = getOrCreate(sectPr, "w:type");
+      setAttr(type, "val", "nextPage");
+
+      const pgSz = getOrCreate(sectPr, "w:pgSz");
+      setAttr(pgSz, "w", "11906");
+      setAttr(pgSz, "h", "16838");
+      setAttr(pgSz, "orient", "portrait");
+
+      const pgMar = getOrCreate(sectPr, "w:pgMar");
+      setAttr(pgMar, "top", cmToTwips(getMarginCm(opts, "top", 2)));
+      setAttr(pgMar, "bottom", cmToTwips(getMarginCm(opts, "bottom", 2)));
+      setAttr(pgMar, "left", cmToTwips(getMarginCm(opts, "left", 3)));
+      setAttr(pgMar, "right", cmToTwips(getMarginCm(opts, "right", 1.5)));
+      setAttr(pgMar, "header", "708");
+      setAttr(pgMar, "footer", "708");
+      setAttr(pgMar, "gutter", "0");
+
+      const cols = getOrCreate(sectPr, "w:cols");
+      setAttr(cols, "space", "708");
+
+      const docGrid = getOrCreate(sectPr, "w:docGrid");
+      setAttr(docGrid, "linePitch", "360");
+
+      return p;
+    };
+
+
+    const sectionPropertiesIsLandscape = (sectPr: Element | null): boolean => {
+      if (!sectPr) return false;
+      const pgSz = Array.from(sectPr.getElementsByTagNameNS(W_NS, "pgSz"))[0];
+      if (!pgSz) return false;
+
+      const orient =
+        pgSz.getAttributeNS(W_NS, "orient") ||
+        pgSz.getAttribute("w:orient") ||
+        pgSz.getAttribute("orient") ||
+        "";
+
+      const width = Number(
+        pgSz.getAttributeNS(W_NS, "w") ||
+        pgSz.getAttribute("w:w") ||
+        pgSz.getAttribute("w") ||
+        "0"
+      );
+
+      const height = Number(
+        pgSz.getAttributeNS(W_NS, "h") ||
+        pgSz.getAttribute("w:h") ||
+        pgSz.getAttribute("h") ||
+        "0"
+      );
+
+      return orient === "landscape" || (width > 0 && height > 0 && width > height);
+    };
+
+    /**
+     * Lấy section properties cuối cùng của phần văn bản kèm theo nếu có.
+     * Nếu bảng kèm theo là trang ngang, section landscape thường nằm ở cuối fragment.
+     * Ta tách sectPr này ra khỏi fragment để không tạo section rỗng/cấu trúc khó đọc,
+     * sau đó gán nó làm body-level sectPr cuối tài liệu.
+     */
+    const extractAndRemoveLastSectionPropertiesFromFragment = (
+      fragment: DocumentFragment
+    ): Element | null => {
+      const children = Array.from(fragment.childNodes).filter(node => node.nodeType === 1) as Element[];
+      let lastSectPr: Element | null = null;
+
+      for (const child of children) {
+        const sectPrs = Array.from(child.getElementsByTagNameNS(W_NS, "sectPr")) as Element[];
+        if (sectPrs.length > 0) {
+          lastSectPr = sectPrs[sectPrs.length - 1];
+        }
+      }
+
+      if (!lastSectPr) return null;
+
+      const clone = lastSectPr.cloneNode(true) as Element;
+      const parent = lastSectPr.parentNode;
+      if (parent) {
+        parent.removeChild(lastSectPr);
+      }
+
+      return clone;
+    };
+
+    const removeChildrenByLocalName = (el: Element, names: string[]): void => {
+      const wanted = new Set(names);
+      Array.from(el.childNodes).forEach(child => {
+        if (child.nodeType !== 1) return;
+        const local = getLocalNameForSpecialDecision(child);
+        if (wanted.has(local)) {
+          el.removeChild(child);
+        }
+      });
+    };
+
+    /**
+     * Word rất nhạy với thứ tự con trực tiếp trong w:sectPr.
+     * Nếu w:headerReference bị append sau w:docGrid, một số bản Word sẽ báo
+     * "unreadable content" dù XML vẫn well-formed. Chuẩn hóa lại thứ tự theo
+     * WordprocessingML: header/footer references đứng đầu, rồi đến type/pgSz/pgMar...
+     */
+    const normalizeSectPrChildOrder = (sectPr: Element): void => {
+      const order = [
+        "headerReference",
+        "footerReference",
+        "footnotePr",
+        "endnotePr",
+        "type",
+        "pgSz",
+        "pgMar",
+        "paperSrc",
+        "pgBorders",
+        "lnNumType",
+        "pgNumType",
+        "cols",
+        "formProt",
+        "vAlign",
+        "noEndnote",
+        "titlePg",
+        "textDirection",
+        "bidi",
+        "rtlGutter",
+        "docGrid",
+        "printerSettings",
+        "sectPrChange"
+      ];
+
+      const children = Array.from(sectPr.childNodes).filter(child => child.nodeType === 1) as Element[];
+      if (children.length <= 1) return;
+
+      const orderIndex = (el: Element): number => {
+        const local = getLocalNameForSpecialDecision(el);
+        const idx = order.indexOf(local);
+        return idx >= 0 ? idx : 999;
+      };
+
+      const sorted = children
+        .map((el, index) => ({ el, index }))
+        .sort((a, b) => {
+          const diff = orderIndex(a.el) - orderIndex(b.el);
+          return diff !== 0 ? diff : a.index - b.index;
+        })
+        .map(item => item.el);
+
+      sorted.forEach(child => sectPr.appendChild(child));
+    };
+
+    const ensureDefaultHeaderReferenceFirst = (docRef: Document, sectPr: Element): void => {
+      removeChildrenByLocalName(sectPr, ["headerReference"]);
+
+      const headerRef = docRef.createElementNS(W_NS, "w:headerReference");
+      setAttr(headerRef, "type", "default");
+      headerRef.setAttributeNS(
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "r:id",
+        "rIdCustomHdr"
+      );
+
+      if (sectPr.firstChild) sectPr.insertBefore(headerRef, sectPr.firstChild);
+      else sectPr.appendChild(headerRef);
+
+      normalizeSectPrChildOrder(sectPr);
+    };
+
+    const ensureFinalBodySectPr = (docRef: Document, targetBody: Element): Element => {
+      const directSectPr = Array.from(targetBody.childNodes).find(child =>
+        child.nodeType === 1 && getLocalNameForSpecialDecision(child) === "sectPr"
+      ) as Element | undefined;
+
+      if (directSectPr) return directSectPr;
+
+      const sectPr = docRef.createElementNS(W_NS, "w:sectPr");
+      targetBody.appendChild(sectPr);
+      return sectPr;
+    };
+
+    /**
+     * Gán section cuối tài liệu theo section gốc của phần kèm theo.
+     * Mục tiêu: Quyết định chính kết thúc bằng section break khổ dọc, còn phần
+     * văn bản/bảng kèm theo nếu vốn là landscape thì section cuối của tài liệu
+     * phải là landscape ở cấp body. Cách này tránh cảnh báo "unreadable content"
+     * do để sectPr landscape trong paragraph rồi lại có một body sectPr portrait rỗng.
+     */
+    const applyFinalAttachmentSectionProperties = (
+      docRef: Document,
+      targetBody: Element,
+      attachmentSectPr: Element | null
+    ): void => {
+      if (!attachmentSectPr || !sectionPropertiesIsLandscape(attachmentSectPr)) return;
+
+      const finalSectPr = ensureFinalBodySectPr(docRef, targetBody);
+      Array.from(finalSectPr.childNodes).forEach(child => finalSectPr.removeChild(child));
+
+      Array.from(attachmentSectPr.childNodes).forEach(child => {
+        if (child.nodeType !== 1) return;
+        const local = getLocalNameForSpecialDecision(child);
+        // w:type không cần đặt ở body-level sectPr cuối; section đã được bắt đầu
+        // bằng đoạn sectPr portrait kiểu nextPage ngay trước phần kèm theo.
+        if (local === "type") return;
+        finalSectPr.appendChild(child.cloneNode(true));
+      });
+
+      const pgSz = getOrCreate(finalSectPr, "w:pgSz");
+      setAttr(pgSz, "w", "16838");
+      setAttr(pgSz, "h", "11906");
+      setAttr(pgSz, "orient", "landscape");
+
+      const pgMar = getOrCreate(finalSectPr, "w:pgMar");
+      if (!pgMar.getAttributeNS(W_NS, "top") && !pgMar.getAttribute("w:top")) {
+        setAttr(pgMar, "top", cmToTwips(getMarginCm(finalOptions, "top", 2)));
+      }
+      if (!pgMar.getAttributeNS(W_NS, "bottom") && !pgMar.getAttribute("w:bottom")) {
+        setAttr(pgMar, "bottom", cmToTwips(getMarginCm(finalOptions, "bottom", 2)));
+      }
+      if (!pgMar.getAttributeNS(W_NS, "left") && !pgMar.getAttribute("w:left")) {
+        setAttr(pgMar, "left", cmToTwips(getMarginCm(finalOptions, "left", 3)));
+      }
+      if (!pgMar.getAttributeNS(W_NS, "right") && !pgMar.getAttribute("w:right")) {
+        setAttr(pgMar, "right", cmToTwips(getMarginCm(finalOptions, "right", 1.5)));
+      }
+      setAttr(pgMar, "header", "708");
+      setAttr(pgMar, "footer", "708");
+      setAttr(pgMar, "gutter", "0");
+
+      const cols = getOrCreate(finalSectPr, "w:cols");
+      setAttr(cols, "space", "708");
+
+      const docGrid = getOrCreate(finalSectPr, "w:docGrid");
+      setAttr(docGrid, "linePitch", "360");
+
+      ensureDefaultHeaderReferenceFirst(docRef, finalSectPr);
+    };
+
+
+
+
+    /**
+     * Word repair guard for nested tables inside table cells.
+     *
+     * In WordprocessingML, a table cell should end with a paragraph. Word may
+     * display "unreadable content" when a generated cell ends directly with a
+     * nested table, which happens in our 1-cell underline tables inside the
+     * Quốc hiệu/Tiêu ngữ header cells. This pass is intentionally generic so it
+     * also protects signature/header tables created by other modules.
+     */
+    const ensureEveryTableCellEndsWithParagraph = (docRef: Document): void => {
+      const tableCells = Array.from(docRef.getElementsByTagNameNS(W_NS, "tc"));
+
+      for (const tc of tableCells) {
+        const elementChildren = Array.from(tc.childNodes).filter(
+          (node): node is Element => node.nodeType === 1
+        );
+
+        if (elementChildren.length === 0) {
+          const p = docRef.createElementNS(W_NS, "w:p");
+          tc.appendChild(p);
+          continue;
+        }
+
+        const last = elementChildren[elementChildren.length - 1];
+        const lastLocalName = getLocalNameForSpecialDecision(last);
+
+        if (lastLocalName !== "p") {
+          const p = docRef.createElementNS(W_NS, "w:p");
+          const pPr = getOrCreate(p, "w:pPr");
+          const spacing = getOrCreate(pPr, "w:spacing");
+          setAttr(spacing, "before", "0");
+          setAttr(spacing, "after", "0");
+          setAttr(spacing, "line", "1");
+          setAttr(spacing, "lineRule", "exact");
+          tc.appendChild(p);
+        }
+      }
+    };
+
+
+    /**
+     * Word repair guard for table-related OOXML child order.
+     *
+     * The generated Quốc hiệu/Tiêu ngữ and signature blocks contain tables.
+     * Word is strict about child order inside w:tblPr and w:tcPr. For example,
+     * w:tblW must appear before w:jc and w:tblBorders, while w:tcBorders must
+     * appear before w:tcMar. Earlier generated code appended properties in a
+     * visually harmless but schema-invalid order, which makes Word show
+     * "unreadable content" as soon as a generated header/signature table is inserted.
+     */
+    const reorderElementChildrenByLocalName = (
+      parent: Element,
+      preferredOrder: string[]
+    ): void => {
+      const children = Array.from(parent.childNodes).filter(
+        (node): node is Element => node.nodeType === 1
+      );
+
+      if (children.length <= 1) return;
+
+      const orderIndex = (el: Element): number => {
+        const local = getLocalNameForSpecialDecision(el);
+        const idx = preferredOrder.indexOf(local);
+        return idx >= 0 ? idx : 999;
+      };
+
+      const sorted = children
+        .map((el, index) => ({ el, index }))
+        .sort((a, b) => {
+          const diff = orderIndex(a.el) - orderIndex(b.el);
+          return diff !== 0 ? diff : a.index - b.index;
+        })
+        .map(item => item.el);
+
+      sorted.forEach(child => parent.appendChild(child));
+    };
+
+    const normalizeTableXmlForWord = (docRef: Document): void => {
+      const tblPrOrder = [
+        "tblStyle",
+        "tblpPr",
+        "tblOverlap",
+        "bidiVisual",
+        "tblStyleRowBandSize",
+        "tblStyleColBandSize",
+        "tblW",
+        "jc",
+        "tblCellSpacing",
+        "tblInd",
+        "tblBorders",
+        "shd",
+        "tblLayout",
+        "tblCellMar",
+        "tblLook",
+        "tblCaption",
+        "tblDescription",
+        "tblPrChange"
+      ];
+
+      const tcPrOrder = [
+        "cnfStyle",
+        "tcW",
+        "gridSpan",
+        "hMerge",
+        "vMerge",
+        "tcBorders",
+        "shd",
+        "noWrap",
+        "tcMar",
+        "textDirection",
+        "tcFitText",
+        "vAlign",
+        "hideMark",
+        "headers",
+        "cellIns",
+        "cellDel",
+        "cellMerge",
+        "tcPrChange"
+      ];
+
+      const moveFirstChildByLocalName = (parent: Element, localName: string): void => {
+        const child = Array.from(parent.childNodes).find(node =>
+          node.nodeType === 1 && getLocalNameForSpecialDecision(node) === localName
+        );
+
+        if (child && parent.firstChild !== child) {
+          parent.insertBefore(child, parent.firstChild);
+        }
+      };
+
+      const moveTblPrAndGridToTop = (tbl: Element): void => {
+        const tblPr = Array.from(tbl.childNodes).find(node =>
+          node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "tblPr"
+        );
+        const tblGrid = Array.from(tbl.childNodes).find(node =>
+          node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "tblGrid"
+        );
+
+        if (tblPr) tbl.insertBefore(tblPr, tbl.firstChild);
+        if (tblGrid) {
+          const insertAfter = tblPr && tblPr.parentNode === tbl ? tblPr.nextSibling : tbl.firstChild;
+          tbl.insertBefore(tblGrid, insertAfter);
+        }
+      };
+
+      /**
+       * Important: do NOT sort block-level content inside w:tc.
+       * A previous guard sorted cell children as [tcPr, p, tbl, ...], which moved the
+       * final safety paragraph before nested underline tables. That recreated cells
+       * ending with w:tbl and Word reported "unreadable content" exactly when
+       * generated Quốc hiệu/Nơi nhận tables were inserted.
+       *
+       * Only property containers are reordered. For container blocks, we only move
+       * mandatory property children to the top and keep the original block order.
+       */
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tblPr")).forEach(el => {
+        reorderElementChildrenByLocalName(el, tblPrOrder);
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tbl")).forEach(el => {
+        moveTblPrAndGridToTop(el);
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tr")).forEach(el => {
+        moveFirstChildByLocalName(el, "trPr");
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tcPr")).forEach(el => {
+        reorderElementChildrenByLocalName(el, tcPrOrder);
+      });
+
+      Array.from(docRef.getElementsByTagNameNS(W_NS, "tc")).forEach(el => {
+        moveFirstChildByLocalName(el, "tcPr");
+      });
+    };
+
+    const createAttachmentSpacerParagraph = (
+      docRef: Document,
+      afterTwips: string = "240"
+    ): Element => {
+      const p = docRef.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(p, "w:pPr");
+      const jc = getOrCreate(pPr, "w:jc");
+      setAttr(jc, "val", "center");
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "0");
+      setAttr(spacing, "after", afterTwips);
+      setAttr(spacing, "line", "240");
+      setAttr(spacing, "lineRule", "auto");
+      const r = docRef.createElementNS(W_NS, "w:r");
+      const t = docRef.createElementNS(W_NS, "w:t");
+      t.textContent = "";
+      r.appendChild(t);
+      p.appendChild(r);
+      return p;
+    };
+
+    const createSingleTopBorderLineTableForAttachment = (
+      docRef: Document,
+      widthTwips: string,
+      borderSize: string = "6",
+      afterTwips: string = "120"
+    ): Element => {
+      const tbl = docRef.createElementNS(W_NS, "w:tbl");
+      const tblPr = getOrCreate(tbl, "w:tblPr");
+
+      const jcTbl = getOrCreate(tblPr, "w:jc");
+      setAttr(jcTbl, "val", "center");
+
+      const tblBorders = getOrCreate(tblPr, "w:tblBorders");
+      ["top", "left", "bottom", "right", "insideH", "insideV"].forEach(side => {
+        const border = getOrCreate(tblBorders, `w:${side}`);
+        setAttr(border, "val", "none");
+      });
+
+      const tblW = getOrCreate(tblPr, "w:tblW");
+      setAttr(tblW, "w", widthTwips);
+      setAttr(tblW, "type", "dxa");
+
+      const tblLayout = getOrCreate(tblPr, "w:tblLayout");
+      setAttr(tblLayout, "type", "fixed");
+
+      const tblGrid = getOrCreate(tbl, "w:tblGrid");
+      const gridCol = docRef.createElementNS(W_NS, "w:gridCol");
+      setAttr(gridCol, "w", widthTwips);
+      tblGrid.appendChild(gridCol);
+
+      const tr = docRef.createElementNS(W_NS, "w:tr");
+      tbl.appendChild(tr);
+
+      const tc = docRef.createElementNS(W_NS, "w:tc");
+      tr.appendChild(tc);
+
+      const tcPr = getOrCreate(tc, "w:tcPr");
+      const tcW = getOrCreate(tcPr, "w:tcW");
+      setAttr(tcW, "w", widthTwips);
+      setAttr(tcW, "type", "dxa");
+
+      const tcMar = getOrCreate(tcPr, "w:tcMar");
+      ["top", "bottom", "left", "right"].forEach(side => {
+        const mar = getOrCreate(tcMar, `w:${side}`);
+        setAttr(mar, "w", "0");
+        setAttr(mar, "type", "dxa");
+      });
+
+      const tcBorders = getOrCreate(tcPr, "w:tcBorders");
+      const top = getOrCreate(tcBorders, "w:top");
+      setAttr(top, "val", "single");
+      setAttr(top, "sz", borderSize);
+      setAttr(top, "space", "0");
+      setAttr(top, "color", "000000");
+
+      const p = docRef.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(p, "w:pPr");
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "0");
+      setAttr(spacing, "after", afterTwips);
+      setAttr(spacing, "line", "2");
+      setAttr(spacing, "lineRule", "exact");
+      tc.appendChild(p);
+
+      return tbl;
+    };
+
+    const isAttachmentNoteStartLineForPreservedDecision = (text: string): boolean => {
+      const raw = String(text || "").trim();
+      const t = normalizeForSpecialDecisionDetect(raw);
+      return raw.includes("(") && t.includes("BAN HANH KEM THEO") && t.includes("QUYET DINH");
+    };
+
+    const isAttachmentNoteContinuationLineForPreservedDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return (
+        t.includes("QUYET DINH SO") ||
+        t.includes("NGAY") ||
+        t.includes("THANG") ||
+        t.includes("NAM") ||
+        t.includes("CUA HIEU TRUONG") ||
+        t.includes("CUA NHA TRUONG") ||
+        t.includes("TRUONG THCS") ||
+        t.includes("TRUONG")
+      );
+    };
+
+    const isSingleTopBorderDecorationTableForAttachment = (node: Node | null): boolean => {
+      if (!node || node.nodeType !== 1) return false;
+      const el = node as Element;
+      const local = (el.localName || el.nodeName || "").replace(/^w:/, "").toLowerCase();
+      if (local !== "tbl") return false;
+      const text = (el.textContent || "").trim();
+      if (text.length > 0) return false;
+      const tcBorders = Array.from(el.getElementsByTagNameNS(W_NS, "tcBorders"));
+      return tcBorders.some(tcBorder => {
+        const top = tcBorder.getElementsByTagNameNS(W_NS, "top")[0];
+        return !!top && (top.getAttribute("w:val") === "single" || top.getAttributeNS(W_NS, "val") === "single");
+      });
+    };
+
+    const decoratePreservedAttachmentFragmentLeadIn = (
+      docRef: Document,
+      fragment: DocumentFragment
+    ): void => {
+      const children = Array.from(fragment.childNodes).filter(node => node.nodeType === 1) as Element[];
+      if (children.length === 0) return;
+
+      let titleIndex = -1;
+      for (let i = 0; i < children.length; i++) {
+        const el = children[i];
+        const local = (el.localName || el.nodeName || "").replace(/^w:/, "").toLowerCase();
+        if (local !== "p") continue;
+        const text = getBlockTextForSpecialDecision(el).trim();
+        if (!text) continue;
+        if (isAttachmentNoteStartLineForPreservedDecision(text)) continue;
+        titleIndex = i;
+        break;
+      }
+
+      if (titleIndex < 0) return;
+
+      let noteStart = -1;
+      let noteEnd = -1;
+      for (let i = titleIndex + 1; i < Math.min(children.length, titleIndex + 8); i++) {
+        const el = children[i];
+        const local = (el.localName || el.nodeName || "").replace(/^w:/, "").toLowerCase();
+        if (local !== "p") {
+          if (noteStart >= 0) break;
+          continue;
+        }
+        const text = getBlockTextForSpecialDecision(el).trim();
+        if (!text) {
+          if (noteStart >= 0) break;
+          continue;
+        }
+        if (noteStart < 0) {
+          if (isAttachmentNoteStartLineForPreservedDecision(text)) {
+            noteStart = i;
+            noteEnd = i;
+            if (text.includes(")")) break;
+          } else {
+            // Nếu đã qua các dòng đầu mà vẫn chưa gặp note thì dừng.
+            if (i > titleIndex + 3) break;
+          }
+        } else {
+          if (isAttachmentNoteContinuationLineForPreservedDecision(text)) {
+            noteEnd = i;
+            if (text.includes(")")) break;
+          } else {
+            break;
+          }
+        }
+      }
+
+      if (noteStart < 0 || noteEnd < 0) return;
+
+      const nextNode = children[noteEnd + 1] || null;
+      if (isSingleTopBorderDecorationTableForAttachment(nextNode)) {
+        return;
+      }
+
+      const lineTbl = createSingleTopBorderLineTableForAttachment(docRef, "3200", "6", "120");
+      if (nextNode) fragment.insertBefore(lineTbl, nextNode);
+      else fragment.appendChild(lineTbl);
+    };
+
+
+    const isParagraphReallyEmptyForPreservedAttachment = (p: Element): boolean => {
+      const text = getBlockTextForSpecialDecision(p).replace(/[\s\u00A0\u200B-\u200D\uFEFF]+/g, "");
+      if (text.length > 0) return false;
+      if (p.getElementsByTagNameNS(W_NS, "drawing").length > 0) return false;
+      if (p.getElementsByTagNameNS(W_NS, "pict").length > 0) return false;
+      if (p.getElementsByTagNameNS(W_NS, "object").length > 0) return false;
+      if (p.getElementsByTagNameNS(W_NS, "sectPr").length > 0) return false;
+
+      const brs = Array.from(p.getElementsByTagNameNS(W_NS, "br"));
+      for (const br of brs) {
+        const brType = br.getAttribute("w:type") || br.getAttributeNS(W_NS, "type");
+        if (brType === "page") return false;
+      }
+
+      return true;
+    };
+
+    const hasAncestorTableForPreservedAttachment = (node: Node): boolean => {
+      let current: Node | null = node.parentNode;
+      while (current && current.nodeType === 1) {
+        const local = getLocalNameForSpecialDecision(current);
+        if (local === "tbl") return true;
+        current = current.parentNode;
+      }
+      return false;
+    };
+
+    const isPreservedAttachmentHeadingText = (text: string): boolean => {
+      const raw = String(text || "").trim();
+      const t = normalizeForSpecialDecisionDetect(raw);
+      if (!raw) return false;
+      if (/^PHU LUC\s*\d*/.test(t)) return true;
+      if (/^[IVXLCDM]+\./.test(t)) return true;
+      if (/^[A-Z]\./.test(t) && raw.length < 120) return true;
+      if (t === "QUY CHE" || t === "NOI QUY" || t === "QUY DINH" || t === "DANH SACH") return true;
+
+      const letters = raw.replace(/[^A-Za-zÀ-ỹĐđ]/g, "");
+      return letters.length >= 8 && letters === letters.toUpperCase() && raw.length <= 180;
+    };
+
+    const setPreservedParagraphRunStyle = (
+      p: Element,
+      fontSizeHalfPoints: number,
+      bold?: boolean,
+      italic?: boolean
+    ): void => {
+      const runs = getNodes(p, "r");
+      for (const r of runs) {
+        const rPr = getOrCreate(r, "w:rPr");
+        const rFonts = getOrCreate(rPr, "w:rFonts");
+        setAttr(rFonts, "ascii", finalOptions.font.family);
+        setAttr(rFonts, "hAnsi", finalOptions.font.family);
+        setAttr(rFonts, "cs", finalOptions.font.family);
+        setAttr(rFonts, "eastAsia", finalOptions.font.family);
+
+        const sz = getOrCreate(rPr, "w:sz");
+        setAttr(sz, "val", String(fontSizeHalfPoints));
+        const szCs = getOrCreate(rPr, "w:szCs");
+        setAttr(szCs, "val", String(fontSizeHalfPoints));
+
+        if (bold === true) {
+          const b = getOrCreate(rPr, "w:b");
+          setAttr(b, "val", "1");
+          const bCs = getOrCreate(rPr, "w:bCs");
+          setAttr(bCs, "val", "1");
+        } else if (bold === false) {
+          Array.from(rPr.getElementsByTagNameNS(W_NS, "b")).forEach(n => n.parentNode?.removeChild(n));
+          Array.from(rPr.getElementsByTagNameNS(W_NS, "bCs")).forEach(n => n.parentNode?.removeChild(n));
+        }
+
+        if (italic === true) {
+          const i = getOrCreate(rPr, "w:i");
+          setAttr(i, "val", "1");
+          const iCs = getOrCreate(rPr, "w:iCs");
+          setAttr(iCs, "val", "1");
+        } else if (italic === false) {
+          Array.from(rPr.getElementsByTagNameNS(W_NS, "i")).forEach(n => n.parentNode?.removeChild(n));
+          Array.from(rPr.getElementsByTagNameNS(W_NS, "iCs")).forEach(n => n.parentNode?.removeChild(n));
+        }
+      }
+    };
+
+    const applyPreservedParagraphLayout = (
+      p: Element,
+      options: {
+        align: "left" | "center" | "right" | "both";
+        before: string;
+        after: string;
+        line: string;
+        firstLine?: string;
+        bold?: boolean;
+        italic?: boolean;
+        fontSizeHalfPoints: number;
+      }
+    ): void => {
+      const pPr = getOrCreate(p, "w:pPr");
+      const jc = getOrCreate(pPr, "w:jc");
+      setAttr(jc, "val", options.align);
+
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", options.before);
+      setAttr(spacing, "after", options.after);
+      setAttr(spacing, "line", options.line);
+      setAttr(spacing, "lineRule", "auto");
+
+      const ind = getOrCreate(pPr, "w:ind");
+      setAttr(ind, "left", "0");
+      setAttr(ind, "right", "0");
+      if (options.firstLine) {
+        setAttr(ind, "firstLine", options.firstLine);
+      } else {
+        ind.removeAttributeNS(W_NS, "firstLine");
+        ind.removeAttribute("w:firstLine");
+      }
+      ind.removeAttributeNS(W_NS, "hanging");
+      ind.removeAttribute("w:hanging");
+
+      setPreservedParagraphRunStyle(p, options.fontSizeHalfPoints, options.bold, options.italic);
+    };
+
+    const normalizePreservedAttachmentTablesSafely = (fragment: DocumentFragment): void => {
+      const tables = Array.from((fragment as any).querySelectorAll ? (fragment as any).querySelectorAll("tbl, w\\:tbl") : []) as Element[];
+      const fallbackTables = tables.length > 0 ? tables : Array.from(fragment.childNodes)
+        .filter(node => node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "tbl") as Element[];
+
+      for (const tbl of fallbackTables) {
+        // Không can thiệp vào bảng 1 ô dùng làm đường kẻ chân.
+        if (isSingleTopBorderDecorationTableForAttachment(tbl)) continue;
+
+        const paragraphs = Array.from(tbl.getElementsByTagNameNS(W_NS, "p"));
+        for (const p of paragraphs) {
+          const pPr = getOrCreate(p, "w:pPr");
+          const spacing = getOrCreate(pPr, "w:spacing");
+          setAttr(spacing, "before", "0");
+          setAttr(spacing, "after", "0");
+          setAttr(spacing, "line", String(Math.round(finalOptions.paragraph.lineSpacing * 240)));
+          setAttr(spacing, "lineRule", "auto");
+
+          const ind = getOrCreate(pPr, "w:ind");
+          ind.removeAttributeNS(W_NS, "firstLine");
+          ind.removeAttribute("w:firstLine");
+          ind.removeAttributeNS(W_NS, "hanging");
+          ind.removeAttribute("w:hanging");
+
+          setPreservedParagraphRunStyle(p, finalOptions.font.sizeTable * 2);
+        }
+      }
+    };
+
+    const formatPreservedAttachmentFragmentSafely = (fragment: DocumentFragment): void => {
+      // 1) Xóa tất cả paragraph rỗng cấp thân văn bản trong phần được bảo vệ.
+      //    Không xóa bảng, không xóa paragraph chứa page break/drawing/sectPr.
+      const directChildren = Array.from(fragment.childNodes);
+      for (const node of directChildren) {
+        if (node.nodeType !== 1) continue;
+        const el = node as Element;
+        if (getLocalNameForSpecialDecision(el) === "p" && isParagraphReallyEmptyForPreservedAttachment(el)) {
+          el.parentNode?.removeChild(el);
+        }
+      }
+
+      // 2) Áp dụng lại các thông số đoạn văn đã quy định trong UI/code
+      //    cho phần văn bản ban hành kèm theo, nhưng vẫn bảo toàn nội dung và bảng.
+      const lineTwips = String(Math.round(finalOptions.paragraph.lineSpacing * 240));
+      const afterTwips = String(Math.round(finalOptions.paragraph.after * TWIPS_PER_PT));
+      const firstLineTwips = String(Math.round(finalOptions.paragraph.indent * TWIPS_PER_CM));
+      const normalSize = finalOptions.font.sizeNormal * 2;
+
+      const bodyLevelParagraphs = Array.from(fragment.childNodes)
+        .filter(node => node.nodeType === 1 && getLocalNameForSpecialDecision(node) === "p") as Element[];
+
+      let passedAttachmentNote = false;
+
+      for (const p of bodyLevelParagraphs) {
+        const text = getBlockTextForSpecialDecision(p).trim();
+        if (!text) continue;
+
+        if (isAttachmentNoteStartLineForPreservedDecision(text) || isAttachmentNoteContinuationLineForPreservedDecision(text) && !passedAttachmentNote) {
+          applyPreservedParagraphLayout(p, {
+            align: "center",
+            before: "0",
+            after: "80",
+            line: lineTwips,
+            fontSizeHalfPoints: normalSize,
+            bold: false,
+            italic: true
+          });
+          if (text.includes(")")) passedAttachmentNote = true;
+          continue;
+        }
+
+        if (isPreservedAttachmentHeadingText(text)) {
+          applyPreservedParagraphLayout(p, {
+            align: "center",
+            before: passedAttachmentNote ? "240" : "0",
+            after: "120",
+            line: lineTwips,
+            fontSizeHalfPoints: normalSize,
+            bold: true,
+            italic: false
+          });
+          continue;
+        }
+
+        applyPreservedParagraphLayout(p, {
+          align: "both",
+          before: "0",
+          after: afterTwips,
+          line: lineTwips,
+          firstLine: firstLineTwips,
+          fontSizeHalfPoints: normalSize,
+          bold: undefined,
+          italic: undefined
+        });
+      }
+
+      normalizePreservedAttachmentTablesSafely(fragment);
+    };
+
+    const getParagraphTextsForSpecialDecision = (root: Element): string[] => {
+      const paragraphs = Array.from(root.getElementsByTagNameNS(W_NS, "p"));
+      return paragraphs
+        .map(pNode => getBlockTextForSpecialDecision(pNode))
+        .filter(text => text.length > 0);
+    };
+
+    const getSchoolTypePrefixForAttachmentHeader = (orgName: string): string | null => {
+      const normalized = normalizeForSpecialDecisionDetect(orgName);
+
+      const prefixes = [
+        "TRUONG THCS VA THPT",
+        "TRUONG THPT",
+        "TRUONG THCS",
+        "TRUONG TIEU HOC VA THCS",
+        "TRUONG TIEU HOC",
+        "TRUONG TH",
+        "TRUONG MN",
+        "TRUONG MAM NON",
+        "TRUONG"
+      ];
+
+      for (const prefix of prefixes) {
+        if (normalized.startsWith(prefix + " ")) {
+          return prefix
+            .replace("TRUONG", "TRƯỜNG")
+            .replace("TIEU HOC", "TIỂU HỌC")
+            .replace("MAM NON", "MẦM NON");
+        }
+      }
+
+      return null;
+    };
+
+    const smartSplitOrgNameForAttachmentHeader = (orgName: string): string[] => {
+      const clean = String(orgName || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+
+      if (!clean) return [];
+
+      // Với tên trường ngắn/vừa, giữ một dòng để đẹp hơn.
+      // Ví dụ: "TRƯỜNG THCS CHU VĂN AN".
+      if (clean.length <= 28) {
+        return [clean];
+      }
+
+      const prefix = getSchoolTypePrefixForAttachmentHeader(clean);
+      if (!prefix) {
+        return [clean];
+      }
+
+      const normalized = normalizeForSpecialDecisionDetect(clean);
+      const normalizedPrefix = normalizeForSpecialDecisionDetect(prefix);
+      const prefixWords = normalizedPrefix.split(" ").length;
+      const originalWords = clean.split(/\s+/);
+      const rest = originalWords.slice(prefixWords).join(" ").trim();
+
+      if (!rest) return [clean];
+
+      // Ngắt dòng thông minh: dòng 1 là loại trường, dòng 2 là cụm tên trường.
+      return [prefix, rest];
+    };
+
+    const extractMainHeaderInfoForAttachment = (targetBody: Element | null): {
+      governingBody: string;
+      orgName: string;
+      nationalHeader: string;
+      motto: string;
+    } => {
+      const org = (finalOptions as any)?.orgInfo || {};
+      const fallback = {
+        governingBody: String(org.governingBody || "UBND XÃ EA KAR").toUpperCase(),
+        orgName: String(org.orgName || "TRƯỜNG THCS CHU VĂN AN").toUpperCase(),
+        nationalHeader: "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM",
+        motto: "Độc lập - Tự do - Hạnh phúc"
+      };
+
+      if (!targetBody) return fallback;
+
+      const topBlocks = getDirectBodyBlocksForSpecialDecision(targetBody).slice(0, 12);
+      for (const block of topBlocks) {
+        if (getLocalNameForSpecialDecision(block) !== "tbl") continue;
+
+        const tableText = normalizeForSpecialDecisionDetect(getBlockTextForSpecialDecision(block));
+        if (!tableText.includes("CONG HOA XA HOI CHU NGHIA VIET NAM")) continue;
+
+        const rows = Array.from(block.getElementsByTagNameNS(W_NS, "tr"));
+        for (const row of rows) {
+          const cells = Array.from(row.getElementsByTagNameNS(W_NS, "tc"));
+          if (cells.length < 2) continue;
+
+          let leftTexts = getParagraphTextsForSpecialDecision(cells[0]);
+          let rightTexts = getParagraphTextsForSpecialDecision(cells[1]);
+
+          const leftNormalized = normalizeForSpecialDecisionDetect(leftTexts.join(" "));
+          const rightNormalized = normalizeForSpecialDecisionDetect(rightTexts.join(" "));
+
+          // Một số mẫu có thể đảo cột; nhận theo nội dung quốc hiệu.
+          if (leftNormalized.includes("CONG HOA XA HOI CHU NGHIA VIET NAM")) {
+            const tmp = leftTexts;
+            leftTexts = rightTexts;
+            rightTexts = tmp;
+          } else if (!rightNormalized.includes("CONG HOA XA HOI CHU NGHIA VIET NAM")) {
+            continue;
+          }
+
+          const nationalHeader =
+            rightTexts.find(text => normalizeForSpecialDecisionDetect(text).includes("CONG HOA XA HOI CHU NGHIA VIET NAM")) ||
+            fallback.nationalHeader;
+
+          const motto =
+            rightTexts.find(text => {
+              const t = normalizeForSpecialDecisionDetect(text);
+              return t.includes("DOC LAP") && t.includes("TU DO") && t.includes("HANH PHUC");
+            }) || fallback.motto;
+
+          const cleanLeftTexts = leftTexts.filter(text => {
+            const t = normalizeForSpecialDecisionDetect(text);
+            return !t.startsWith("SO:") && !isDateLineForSpecialDecision(text);
+          });
+
+          return {
+            governingBody: (cleanLeftTexts[0] || fallback.governingBody).toUpperCase(),
+            orgName: (cleanLeftTexts[1] || fallback.orgName).toUpperCase(),
+            nationalHeader,
+            motto
+          };
+        }
+      }
+
+      return fallback;
+    };
+
+    const isSchoolDecisionAuthorityLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return (
+        t.startsWith("HIEU TRUONG TRUONG") ||
+        t.startsWith("HIEU TRUONG") ||
+        t.startsWith("PHO HIEU TRUONG") ||
+        t.startsWith("GIAI DOC") ||
+        t.startsWith("CHU TICH")
+      );
+    };
+
+    const isDecisionLegalBasisLineForSpecialDecision = (text: string): boolean => {
+      const t = normalizeForSpecialDecisionDetect(text);
+      return (
+        t.startsWith("CAN CU") ||
+        t.startsWith("XET") ||
+        t.startsWith("THEO") ||
+        t.startsWith("THUC HIEN")
+      );
+    };
+
+    const applyMainDecisionAuthoritySpacingForSpecialDecision = (targetBody: Element | null): void => {
+      if (!targetBody) return;
+
+      const blocks = getDirectBodyBlocksForSpecialDecision(targetBody);
+      let commandIndex = -1;
+
+      for (let i = 0; i < blocks.length; i++) {
+        const text = getBlockTextForSpecialDecision(blocks[i]);
+        const t = normalizeForSpecialDecisionDetect(text);
+        if (t === "QUYET DINH:" || t === "QUYET DINH") {
+          commandIndex = i;
+        }
+
+        if (commandIndex >= 0 && isSchoolDecisionAuthorityLineForSpecialDecision(text)) {
+          const pPr = getOrCreate(blocks[i], "w:pPr");
+          const spacing = getOrCreate(pPr, "w:spacing");
+          setAttr(spacing, "before", "360");
+          setAttr(spacing, "after", "360");
+          setAttr(spacing, "line", "240");
+          setAttr(spacing, "lineRule", "auto");
+
+          for (let j = i + 1; j < blocks.length; j++) {
+            const nextText = getBlockTextForSpecialDecision(blocks[j]);
+            if (!nextText) continue;
+
+            if (isDecisionLegalBasisLineForSpecialDecision(nextText)) {
+              const nextPPr = getOrCreate(blocks[j], "w:pPr");
+              const nextSpacing = getOrCreate(nextPPr, "w:spacing");
+              setAttr(nextSpacing, "before", "0");
+              setAttr(nextSpacing, "after", "0");
+              setAttr(nextSpacing, "line", "240");
+              setAttr(nextSpacing, "lineRule", "auto");
+            }
+
+            break;
+          }
+
+          break;
+        }
+      }
+    };
+
+    const createAttachmentHeaderForPreservedDecision = (docRef: Document, targetBody: Element | null): Node => {
+      const fragment = docRef.createDocumentFragment();
+      const headerInfo = extractMainHeaderInfoForAttachment(targetBody);
+
+      const tbl = docRef.createElementNS(W_NS, "w:tbl");
+      const tblPr = getOrCreate(tbl, "w:tblPr");
+      const tblBorders = getOrCreate(tblPr, "w:tblBorders");
+      ["top", "left", "bottom", "right", "insideH", "insideV"].forEach(side => {
+        const border = getOrCreate(tblBorders, `w:${side}`);
+        setAttr(border, "val", "none");
+      });
+
+      const tblLayout = getOrCreate(tblPr, "w:tblLayout");
+      setAttr(tblLayout, "type", "fixed");
+      const tblW = getOrCreate(tblPr, "w:tblW");
+      setAttr(tblW, "w", "9350");
+      setAttr(tblW, "type", "dxa");
+
+      const tblGrid = getOrCreate(tbl, "w:tblGrid");
+      const col1 = docRef.createElementNS(W_NS, "w:gridCol");
+      setAttr(col1, "w", "3800");
+      tblGrid.appendChild(col1);
+      const col2 = docRef.createElementNS(W_NS, "w:gridCol");
+      setAttr(col2, "w", "5550");
+      tblGrid.appendChild(col2);
+
+      const tr = docRef.createElementNS(W_NS, "w:tr");
+      tbl.appendChild(tr);
+
+      const createCell = (width: string, noWrap: boolean = false): Element => {
+        const tc = docRef.createElementNS(W_NS, "w:tc");
+        const tcPr = getOrCreate(tc, "w:tcPr");
+        const tcW = getOrCreate(tcPr, "w:tcW");
+        setAttr(tcW, "w", width);
+        setAttr(tcW, "type", "dxa");
+
+        const tcMar = getOrCreate(tcPr, "w:tcMar");
+        ["top", "bottom", "left", "right"].forEach(side => {
+          const mar = getOrCreate(tcMar, `w:${side}`);
+          setAttr(mar, "w", "0");
+          setAttr(mar, "type", "dxa");
+        });
+
+        if (noWrap) {
+          getOrCreate(tcPr, "w:noWrap");
+        }
+
+        return tc;
+      };
+
+      const leftCell = createCell("3800");
+      // Quốc hiệu phải nằm trên một dòng, nên bật noWrap cho ô bên phải.
+      const rightCell = createCell("5550", true);
+      tr.appendChild(leftCell);
+      tr.appendChild(rightCell);
+
+      leftCell.appendChild(createSimpleParagraphForAttachmentHeader(docRef, headerInfo.governingBody, { bold: false, size: 12 }));
+
+      const orgNameLines = smartSplitOrgNameForAttachmentHeader(headerInfo.orgName);
+      orgNameLines.forEach(line => {
+        leftCell.appendChild(createSimpleParagraphForAttachmentHeader(docRef, line, { bold: true, size: 12 }));
+      });
+      leftCell.appendChild(createSingleTopBorderLineTableForAttachment(docRef, "1000", "4", "0"));
+
+      // Giảm cỡ chữ quốc hiệu còn 12pt và noWrap ở ô phải để luôn giữ một dòng.
+      rightCell.appendChild(createSimpleParagraphForAttachmentHeader(docRef, headerInfo.nationalHeader, { bold: true, size: 12 }));
+      rightCell.appendChild(createSimpleParagraphForAttachmentHeader(docRef, headerInfo.motto, { bold: true, size: 12 }));
+      rightCell.appendChild(createSingleTopBorderLineTableForAttachment(docRef, "3200", "6", "0"));
+
+      fragment.appendChild(tbl);
+      return fragment;
+    };
+
+    const preservedAttachmentBoundary = body
+      ? findPreservedAttachmentStartAfterMainDecision(body)
+      : null;
+
+    if (preservedAttachmentBoundary) {
+      // Xóa vùng chữ ký/Nơi nhận/header cũ nằm giữa Điều kết thúc và văn bản kèm theo.
+      // Phần này thuộc Quyết định chính cũ, không thuộc văn bản ban hành kèm theo.
+      removeBlocksBetweenMainEndingAndAttachment(
+        body,
+        preservedAttachmentBoundary.ending,
+        preservedAttachmentBoundary.start
+      );
+    }
+
+    const preservedAttachmentFragment = preservedAttachmentBoundary
+      ? extractPreservedBlocksFrom(doc, body, preservedAttachmentBoundary.start)
+      : null;
+
+    const preservedAttachmentFinalSectPr = preservedAttachmentFragment
+      ? extractAndRemoveLastSectionPropertiesFromFragment(preservedAttachmentFragment)
+      : null;
+
+    if (preservedAttachmentFragment) {
+      logs.push("QuyetDinhNT: extracted and protected only the attached document content after the main decision ending article");
+    }
+
+    extractReceivers(doc, finalOptions);
+    trimParagraphs(doc);
+    cleanHeader(doc, finalOptions.headerType);
+    cleanTail(doc);
+
+    // 🔥 BẢN VÁ THÔNG MINH: Cỗ máy quét và xóa triệt để Khung Quốc hiệu/Tiêu ngữ Đảng cũ
+    if (finalOptions.headerType === HeaderType.PARTY) {
+        const topElements = Array.from(body.childNodes).slice(0, 15);
+        for (const node of topElements) {
+            if (node.nodeType !== 1) continue;
+            const el = node as Element;
+            const nodeName = el.nodeName.replace("w:", "");
+            if (nodeName !== "tbl" && nodeName !== "p") continue;
+
+            const text = el.textContent?.toUpperCase() || "";
+            const cleanText = text.replace(/^[\s\xA0]+/, ''); // Loại bỏ khoảng trắng đầu dòng
+
+            // Chạm đến Tiêu đề chính (NGHỊ QUYẾT, QUYẾT ĐỊNH...) thì dừng lại để không xóa lẹm nội dung
+            const isMainTitle = DOC_TYPE_KEYWORDS.some(k => cleanText.replace(/^[^A-ZÀ-Ỹ]+/, '').startsWith(k));
+            if (isMainTitle && cleanText.length < 100) break;
+
+            // Nhận diện các dấu hiệu của Header Đảng cũ để tiêu diệt
+            let isArtifact = false;
+            if (nodeName === "tbl" && cleanText.includes("ĐẢNG CỘNG SẢN")) {
+                isArtifact = true;
+            } else if (nodeName === "p") {
+                if (
+                    cleanText.startsWith("ĐẢNG CỘNG SẢN") ||
+                    cleanText.startsWith("ĐẢNG BỘ") ||
+                    cleanText.startsWith("CHI BỘ") ||
+                    /^SỐ[:\s]+.*-/i.test(cleanText) ||
+                    (cleanText.includes("NGÀY") && cleanText.includes("THÁNG") && cleanText.includes("NĂM") && cleanText.length < 80 && !cleanText.startsWith("KÍNH GỬI"))
+                ) {
+                    isArtifact = true;
+                }
+            }
+
+            if (isArtifact) {
+                el.parentNode?.removeChild(el);
+            }
+        }
+    }
+
+    // ==========================================
+    // BƯỚC 2: XÓA ĐÁNH SỐ TỰ ĐỘNG
+    // ==========================================
+    let listFormats: Record<string, string> = {};
+    const numberingXmlContent = await zip.file("word/numbering.xml")?.async("string");
+
+    if (numberingXmlContent) {
+        const numDoc = parser.parseFromString(numberingXmlContent, "application/xml");
+        const nums = getNodes(numDoc, "num");
+        const abstractNums = getNodes(numDoc, "abstractNum");
+
+        const numToAbstractMap: Record<string, string> = {};
+
+        for (const num of nums) {
+            const numId = num.getAttributeNS(W_NS, "numId") || num.getAttribute("w:numId");
+            const absNumIdEl = getNodes(num, "abstractNumId")[0];
+
+            if (numId && absNumIdEl) {
+              numToAbstractMap[numId] =
+                absNumIdEl.getAttributeNS(W_NS, "val") ||
+                absNumIdEl.getAttribute("w:val") ||
+                "";
+            }
+        }
+
+        const absNumMap: Record<string, Element> = {};
+
+        for (const absNum of abstractNums) {
+            const absId =
+              absNum.getAttributeNS(W_NS, "abstractNumId") ||
+              absNum.getAttribute("w:abstractNumId");
+
+            if (absId) absNumMap[absId] = absNum;
+        }
+
+        for (const numId in numToAbstractMap) {
+            const absId = numToAbstractMap[numId];
+            const absNum = absNumMap[absId];
+
+            if (absNum) {
+                const lvls = getNodes(absNum, "lvl");
+
+                for (const lvl of lvls) {
+                    const ilvl = lvl.getAttributeNS(W_NS, "ilvl") || lvl.getAttribute("w:ilvl");
+                    const numFmtEl = getNodes(lvl, "numFmt")[0];
+                    const numFmt = numFmtEl
+                      ? (numFmtEl.getAttributeNS(W_NS, "val") || numFmtEl.getAttribute("w:val"))
+                      : "";
+
+                    if (ilvl && numFmt) listFormats[`${numId}_${ilvl}`] = numFmt;
+                }
+            }
+        }
+    }
+
+    if (finalOptions.removeNumbering) {
+        const allParagraphs = getNodes(doc, "p");
+        let listCounters: Record<string, number> = {};
+
+        for (const p of allParagraphs) {
+            const pPr = getNodes(p, "pPr")[0];
+
+            let fullText = "";
+            const pRunsForText = getNodes(p, "r");
+
+            for (const r of pRunsForText) {
+                Array.from(r.childNodes).forEach(child => {
+                    const name = child.nodeName.replace("w:", "");
+                    if (name === "t") fullText += child.textContent;
+                    if (name === "tab") fullText += " ";
+                });
+            }
+
+            fullText = fullText.trim();
+
+            if (pPr) {
+                const numPr = getNodes(pPr, "numPr")[0];
+
+                if (numPr) {
+                    const ilvlEl = getNodes(numPr, "ilvl")[0];
+                    const numIdEl = getNodes(numPr, "numId")[0];
+
+                    const ilvl = ilvlEl
+                      ? (ilvlEl.getAttributeNS(W_NS, "val") || ilvlEl.getAttribute("w:val") || "0")
+                      : "0";
+
+                    const numId = numIdEl
+                      ? (numIdEl.getAttributeNS(W_NS, "val") || numIdEl.getAttribute("w:val") || "0")
+                      : "0";
+
+                    const levelKey = `${numId}_${ilvl}`;
+                    const numFmt = listFormats[levelKey] || "decimal";
+
+                    if (!listCounters[levelKey]) listCounters[levelKey] = 0;
+                    listCounters[levelKey]++;
+
+                    const hasListPrefix = /^([IVXLCDM]+\.|[0-9]+\.|[a-zđ]\)|\-|\+|\*|•)/i.test(fullText);
+
+                    if (!hasListPrefix && fullText.length > 0) {
+                        let prefix = "";
+
+                        if (numFmt === "bullet") prefix = "";
+                        else if (numFmt === "decimal") prefix = `${listCounters[levelKey]}. `;
+                        else if (numFmt === "lowerLetter") prefix = `${String.fromCharCode(96 + listCounters[levelKey])}) `;
+                        else if (numFmt === "upperLetter") prefix = `${String.fromCharCode(64 + listCounters[levelKey])}. `;
+                        else prefix = `${listCounters[levelKey]}. `;
+
+                        if (prefix !== "") {
+                            const r = doc.createElementNS(W_NS, "w:r");
+                            const t = doc.createElementNS(W_NS, "w:t");
+
+                            t.setAttribute("xml:space", "preserve");
+                            t.textContent = prefix;
+                            r.appendChild(t);
+
+                            const insertBeforeNode = pPr.nextSibling;
+
+                            if (insertBeforeNode) p.insertBefore(r, insertBeforeNode);
+                            else p.appendChild(r);
+                        }
+                    }
+
+                    pPr.removeChild(numPr);
+                }
+            }
+
+            const firstRun = getNodes(p, "r")[0];
+
+            if (firstRun) {
+                const firstText = getNodes(firstRun, "t")[0];
+
+                if (firstText && firstText.textContent) {
+                    const bulletRegex = /^[\s]*([•\-\–\—\*])[\s]+/;
+
+                    if (bulletRegex.test(firstText.textContent)) {
+                        firstText.textContent = firstText.textContent.replace(bulletRegex, "").trimStart();
+                    }
+                }
+            }
+        }
+    }
+
+    formatPageStructure(doc, finalOptions);
+    normalizeTables(doc, finalOptions);
+
+    const rebuildParagraph = (
+      p: Element,
+      text: string,
+      isBold: boolean,
+      fontSize: string,
+      isTitle: boolean
+    ) => {
+        Array.from(p.childNodes).forEach(child => {
+            const localName = child.nodeName.includes(":") ? child.nodeName.split(":")[1] : child.nodeName;
+            if (localName !== "pPr") p.removeChild(child);
+        });
+
+        const r = doc.createElementNS(W_NS, "w:r");
+        const rPr = doc.createElementNS(W_NS, "w:rPr");
+        r.appendChild(rPr);
+
+        const pPr = getOrCreate(p, "w:pPr");
+
+        const jc = getOrCreate(pPr, "w:jc");
+        setAttr(jc, "val", "center");
+
+        const ind = getOrCreate(pPr, "w:ind");
+        setAttr(ind, "left", "0");
+        setAttr(ind, "right", "0");
+        setAttr(ind, "firstLine", "0");
+        ind.removeAttributeNS(W_NS, "hanging");
+        ind.removeAttribute("w:hanging");
+
+        const spacing = getOrCreate(pPr, "w:spacing");
+        setAttr(spacing, "before", isTitle ? "480" : "0");
+        setAttr(spacing, "after", "0");
+        setAttr(spacing, "line", "240");
+        setAttr(spacing, "lineRule", "auto");
+
+        const rFonts = getOrCreate(rPr, "w:rFonts");
+        setAttr(rFonts, "ascii", finalOptions.font.family);
+        setAttr(rFonts, "hAnsi", finalOptions.font.family);
+        setAttr(rFonts, "cs", finalOptions.font.family);
+        setAttr(rFonts, "eastAsia", finalOptions.font.family);
+
+        if (isBold) {
+            forceBoldNode(rPr);
+            forceParagraphBold(pPr);
+        } else {
+            removeBoldNode(rPr);
+        }
+
+        const iEl = getNodes(rPr, "i")[0];
+        if (iEl) rPr.removeChild(iEl);
+
+        const iCsEl = getNodes(rPr, "iCs")[0];
+        if (iCsEl) rPr.removeChild(iCsEl);
+
+        const sz = getOrCreate(rPr, "w:sz");
+        setAttr(sz, "val", fontSize);
+
+        const szCs = getOrCreate(rPr, "w:szCs");
+        setAttr(szCs, "val", fontSize);
+
+        const t = doc.createElementNS(W_NS, "w:t");
+        t.textContent = applyCloudDictionary(text);
+        r.appendChild(t);
+        p.appendChild(r);
+    };
+
+    const createTitleUnderlineFrag = (
+      protectedElements: Set<Element>,
+      lineTables: Set<Element>
+    ): DocumentFragment => {
+        const frag = doc.createDocumentFragment();
+
+        const tbl = doc.createElementNS(W_NS, "w:tbl");
+        lineTables.add(tbl);
+
+        const tblPr = doc.createElementNS(W_NS, "w:tblPr");
+        tbl.appendChild(tblPr);
+
+        const jcTbl = doc.createElementNS(W_NS, "w:jc");
+        setAttr(jcTbl, "val", "center");
+        tblPr.appendChild(jcTbl);
+
+        const tblW = doc.createElementNS(W_NS, "w:tblW");
+        setAttr(tblW, "w", "1500");
+        setAttr(tblW, "type", "dxa");
+        tblPr.appendChild(tblW);
+
+        const tblLayout = doc.createElementNS(W_NS, "w:tblLayout");
+        setAttr(tblLayout, "type", "fixed");
+        tblPr.appendChild(tblLayout);
+
+        const tblGrid = doc.createElementNS(W_NS, "w:tblGrid");
+        const gridCol = doc.createElementNS(W_NS, "w:gridCol");
+        setAttr(gridCol, "w", "1500");
+        tblGrid.appendChild(gridCol);
+        tbl.appendChild(tblGrid);
+
+        const tr = doc.createElementNS(W_NS, "w:tr");
+        tbl.appendChild(tr);
+
+        const trPr = doc.createElementNS(W_NS, "w:trPr");
+        const trHeight = doc.createElementNS(W_NS, "w:trHeight");
+        setAttr(trHeight, "val", String(Math.round(0.1 * TWIPS_PER_CM)));
+        setAttr(trHeight, "hRule", "exact");
+        trPr.appendChild(trHeight);
+        tr.appendChild(trPr);
+
+        const tc = doc.createElementNS(W_NS, "w:tc");
+        tr.appendChild(tc);
+
+        const tcPr = doc.createElementNS(W_NS, "w:tcPr");
+        tc.appendChild(tcPr);
+
+        const tcW = doc.createElementNS(W_NS, "w:tcW");
+        setAttr(tcW, "w", "1500");
+        setAttr(tcW, "type", "dxa");
+        tcPr.appendChild(tcW);
+
+        const tcMar = doc.createElementNS(W_NS, "w:tcMar");
+        ["top", "bottom", "left", "right"].forEach(side => {
+            const mar = doc.createElementNS(W_NS, `w:${side}`);
+            setAttr(mar, "w", "0");
+            setAttr(mar, "type", "dxa");
+            tcMar.appendChild(mar);
+        });
+        tcPr.appendChild(tcMar);
+
+        const tcBorders = doc.createElementNS(W_NS, "w:tcBorders");
+        const top = doc.createElementNS(W_NS, "w:top");
+        setAttr(top, "val", "single");
+        setAttr(top, "sz", "6");
+        setAttr(top, "space", "0");
+        setAttr(top, "color", "000000");
+        tcBorders.appendChild(top);
+        tcPr.appendChild(tcBorders);
+
+        const p = doc.createElementNS(W_NS, "w:p");
+        const pPr = doc.createElementNS(W_NS, "w:pPr");
+        p.appendChild(pPr);
+
+        const spacing = doc.createElementNS(W_NS, "w:spacing");
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "120");
+        setAttr(spacing, "line", "2");
+        setAttr(spacing, "lineRule", "exact");
+        pPr.appendChild(spacing);
+
+        tc.appendChild(p);
+        protectedElements.add(p);
+
+        frag.appendChild(tbl);
+        return frag;
+    };
+
+    const createPartyDashLine = (protectedElements: Set<Element>): Element => {
+        const p = doc.createElementNS(W_NS, "w:p");
+        const pPr = getOrCreate(p, "w:pPr");
+
+        const jc = getOrCreate(pPr, "w:jc");
+        setAttr(jc, "val", "center");
+
+        const ind = getOrCreate(pPr, "w:ind");
+        setAttr(ind, "left", "0");
+        setAttr(ind, "right", "0");
+        setAttr(ind, "firstLine", "0");
+        ind.removeAttributeNS(W_NS, "hanging");
+        ind.removeAttribute("w:hanging");
+
+        const spacing = getOrCreate(pPr, "w:spacing");
+        setAttr(spacing, "before", "0");
+        setAttr(spacing, "after", "120");
+        setAttr(spacing, "line", "240");
+        setAttr(spacing, "lineRule", "auto");
+
+        const r = doc.createElementNS(W_NS, "w:r");
+        const rPr = getOrCreate(r, "w:rPr");
+
+        const rFonts = getOrCreate(rPr, "w:rFonts");
+        setAttr(rFonts, "ascii", finalOptions.font.family);
+        setAttr(rFonts, "hAnsi", finalOptions.font.family);
+        setAttr(rFonts, "cs", finalOptions.font.family);
+        setAttr(rFonts, "eastAsia", finalOptions.font.family);
+
+        removeBoldNode(rPr);
+
+        const sz = getOrCreate(rPr, "w:sz");
+        setAttr(sz, "val", String(finalOptions.font.sizeNormal * 2));
+
+        const szCs = getOrCreate(rPr, "w:szCs");
+        setAttr(szCs, "val", String(finalOptions.font.sizeNormal * 2));
+
+        const t = doc.createElementNS(W_NS, "w:t");
+        t.textContent = "-----";
+
+        r.appendChild(t);
+        p.appendChild(r);
+
+        protectedElements.add(p);
+
+        return p;
+    };
+
+    // Văn bản Đảng: nhận diện thống nhất dòng phân cách và đoạn mở đầu thân văn bản.
+    // Mục tiêu: dòng "-----" kết thúc khối trích yếu; đoạn "Ngày ... tháng ... năm ..." không được coi là trích yếu.
+    const normalizeInlineTextForDetect = (text: string) => {
+        return (text || "")
+            .replace(/[‐-‒–—―]/g, "-")
+            .replace(/\s+/g, " ")
+            .trim();
+    };
+
+    const isDashOnlyLine = (text: string) => {
+        const compact = normalizeInlineTextForDetect(text).replace(/\s+/g, "");
+        return /^[-_*]{3,}$/.test(compact);
+    };
+
+    const isPartyBodyOpeningLine = (text: string) => {
+        const t = normalizeInlineTextForDetect(text);
+        return /^Ngày\s+\d{1,2}\s+tháng\s+\d{1,2}\s+năm\s+\d{4}/i.test(t);
+    };
+
+    const paragraphs = getNodes(doc, "p");
+    let detectedDocType = "";
+    const docTypeElements = new Set<Element>();
+    const abstractElements = new Set<Element>();
+    const protectedElements = new Set<Element>();
+    const lineTables = new Set<Element>();
+
+    let shouldAddSingleLineBeforeBody = false;
+
+    const limit = Math.min(paragraphs.length, 20);
+
+    for (let i = 0; i < limit; i++) {
+        const p = paragraphs[i];
+
+        if (isTableParagraph(p)) continue;
+
+        const text = p.textContent?.trim() || "";
+
+        if (!text) continue;
+
+        if (finalOptions.isCongVan) {
+            const upperText = text.toUpperCase();
+
+            if (
+                upperText === "CÔNG VĂN" ||
+                upperText.startsWith("V/V") ||
+                upperText.startsWith("VỀ VIỆC") ||
+                upperText.startsWith("TRÍCH YẾU")
+            ) {
+                abstractElements.add(p);
+                p.parentNode?.removeChild(p);
+            }
+
+            continue;
+        }
+
+        const cleanText = text.toUpperCase().replace(/^[^A-ZÀ-Ỹ]+/, '');
+        const matchedKeyword = DOC_TYPE_KEYWORDS.find(k => cleanText.startsWith(k));
+
+        if (matchedKeyword) {
+            docTypeElements.add(p);
+            detectedDocType = matchedKeyword;
+
+            const summaryParagraphs: Element[] = [];
+            const originalUpper = text.toUpperCase();
+            const keywordIndex = originalUpper.indexOf(matchedKeyword);
+            const remainingText = text.slice(keywordIndex + matchedKeyword.length).trim();
+
+            rebuildParagraph(p, matchedKeyword, true, "28", true);
+
+            if (remainingText.length > 3) {
+                const newP = doc.createElementNS(W_NS, "w:p");
+
+                if (p.nextSibling) p.parentNode?.insertBefore(newP, p.nextSibling);
+                else p.parentNode?.appendChild(newP);
+
+                summaryParagraphs.push(newP);
+
+                rebuildParagraph(
+                    newP,
+                    applyCloudDictionary(normalizeSummary(remainingText)),
+                    true,
+                    String(finalOptions.font.sizeNormal * 2),
+                    false
+                );
+            }
+
+            let linesCaptured = 0;
+            let currentIndex = i + 1;
+            let hasFoundBoldSummary = false;
+
+            while (currentIndex < paragraphs.length && linesCaptured < 8) {
+                const tempP = paragraphs[currentIndex];
+
+                if (isTableParagraph(tempP)) break;
+
+                const tempText = tempP.textContent?.trim() || "";
+
+                if (tempText.length > 0) {
+                    const upperText = tempText.toUpperCase();
+
+                    // Văn bản Đảng: dòng "-----" là ranh giới kết thúc trích yếu.
+                    // Xóa dòng gạch cũ để bên dưới chỉ chèn lại một dòng chuẩn duy nhất.
+                    if (finalOptions.headerType === HeaderType.PARTY && isDashOnlyLine(tempText)) {
+                        tempP.parentNode?.removeChild(tempP);
+                        currentIndex++;
+                        break;
+                    }
+
+                    // Văn bản Đảng: đoạn mở đầu dạng "Ngày ... tháng ... năm ..." là thân văn bản,
+                    // không phải dòng trích yếu/trích dẫn.
+                    if (finalOptions.headerType === HeaderType.PARTY && isPartyBodyOpeningLine(tempText)) {
+                        break;
+                    }
+
+                    if (
+                        upperText.startsWith("CĂN CỨ") ||
+                        upperText.startsWith("XÉT") ||
+                        upperText.startsWith("THEO") ||
+                        upperText.startsWith("KÍNH GỬI") ||
+                        upperText.startsWith("HÔM NAY") ||
+                        upperText.startsWith("THỜI GIAN:") ||
+                        upperText.startsWith("ĐỒNG KÍNH GỬI")
+                    ) break;
+
+                    if (
+                        upperText.startsWith("HIỆU TRƯỞNG") ||
+                        upperText.startsWith("GIÁM ĐỐC") ||
+                        upperText.startsWith("CHỦ TỊCH") ||
+                        upperText.startsWith("QUYẾT ĐỊNH")
+                    ) break;
+
+                    if (/^([IVXLCDM]+|[0-9]+)[\.\)]\s/.test(tempText)) break;
+                    if (tempText.length > 250) break;
+
+                    const isBold = isParagraphBold(tempP);
+
+                    if (hasFoundBoldSummary && !isBold) break;
+                    if (isBold) hasFoundBoldSummary = true;
+                    if (!hasFoundBoldSummary && linesCaptured >= 3) break;
+
+                    summaryParagraphs.push(tempP);
+
+                    rebuildParagraph(
+                        tempP,
+                        applyCloudDictionary(normalizeSummary(tempText)),
+                        true,
+                        String(finalOptions.font.sizeNormal * 2),
+                        false
+                    );
+
+                    linesCaptured++;
+                } else {
+                    const toDelete = tempP;
+                    toDelete.parentNode?.removeChild(toDelete);
+                }
+
+                currentIndex++;
+            }
+
+            summaryParagraphs.forEach(sp => abstractElements.add(sp));
+
+            if (!finalOptions.isCongVan) {
+                const targetNode =
+                  summaryParagraphs.length > 0
+                    ? summaryParagraphs[summaryParagraphs.length - 1]
+                    : p;
+
+                let nextNode = targetNode.nextSibling;
+
+                while (nextNode) {
+                    const nodeName = nextNode.nodeName;
+
+                    if (nodeName === "w:p" || nodeName === "p") {
+                        const el = nextNode as Element;
+                        const textNodes = getNodes(el, "t");
+                        const text = textNodes.map(n => n.textContent || "").join("").trim();
+
+                        let hasPageBreak = false;
+                        const brs = getNodes(el, "br");
+
+                        for (const br of brs) {
+                            if (
+                              br.getAttribute("w:type") === "page" ||
+                              br.getAttributeNS(W_NS, "type") === "page"
+                            ) {
+                                hasPageBreak = true;
+                                break;
+                            }
+                        }
+
+                        if (text.length === 0 && !hasPageBreak) {
+                            const toDelete = nextNode;
+                            nextNode = nextNode.nextSibling;
+                            toDelete.parentNode?.removeChild(toDelete);
+                        } else {
+                            break;
+                        }
+                    } else if (nodeName === "w:tbl" || nodeName === "tbl") {
+                        const el = nextNode as Element;
+                        const text = el.textContent?.trim() || "";
+
+                        if (text.length === 0) {
+                            const toDelete = nextNode;
+                            nextNode = nextNode.nextSibling;
+                            toDelete.parentNode?.removeChild(toDelete);
+                        } else {
+                            break;
+                        }
+                    } else {
+                        nextNode = nextNode.nextSibling;
+                    }
+                }
+
+                if (finalOptions.headerType === HeaderType.PARTY) {
+                    const dashP = createPartyDashLine(protectedElements);
+
+                    if (nextNode) targetNode.parentNode?.insertBefore(dashP, nextNode);
+                    else targetNode.parentNode?.appendChild(dashP);
+                } else {
+                    const underlineFrag = createTitleUnderlineFrag(protectedElements, lineTables);
+
+                    if (nextNode) targetNode.parentNode?.insertBefore(underlineFrag, nextNode);
+                    else targetNode.parentNode?.appendChild(underlineFrag);
+                }
+            }
+
+            if (
+                detectedDocType !== "QUYẾT ĐỊNH" &&
+                finalOptions.isDecision !== true &&
+                finalOptions.isCongVan !== true
+            ) {
+                shouldAddSingleLineBeforeBody = true;
+            }
+
+            break;
+        }
+    }
+
+    const finalParagraphs = getNodes(doc, "p");
+    let inKinhGuiBlock = false;
+    let addSpaceBeforeMainContent = false;
+    let isBodyArea = true;
+
+    let hasPassedDecisionWord = false;
+    let validContentLines = 0;
+
+    const isSchoolDecision =
+      finalOptions.isDecision === true &&
+      finalOptions.headerType === HeaderType.SCHOOL;
+
+    const isPartyDecision =
+      finalOptions.isDecision === true &&
+      finalOptions.headerType === HeaderType.PARTY;
+
+    for (const p of finalParagraphs) {
+      if (docTypeElements.has(p) || abstractElements.has(p) || protectedElements.has(p)) continue;
+
+      const pText = p.textContent || "";
+      const trimmedPTextOriginal = pText.trim();
+      const upperText = trimmedPTextOriginal.toUpperCase();
+
+      if (upperText === "QUYẾT ĐỊNH" || upperText === "QUYẾT ĐỊNH:") {
+          hasPassedDecisionWord = true;
+      }
+
+      if (trimmedPTextOriginal.length > 0) {
+          validContentLines++;
+      }
+
+      if (isBodyArea && trimmedPTextOriginal.length > 0) {
+          const isTopHeaderAuth = (detectedDocType === "QUYẾT ĐỊNH" || finalOptions.isDecision === true) &&
+                                  !hasPassedDecisionWord &&
+                                  (upperText.includes("HIỆU TRƯỞNG") || upperText.includes("GIÁM ĐỐC") || upperText.includes("CHỦ TỊCH") || upperText.includes("CẤP ỦY"));
+
+          if (
+            upperText.startsWith("NƠI NHẬN:") ||
+            upperText === "NƠI NHẬN" ||
+            (
+              !isTopHeaderAuth &&
+              validContentLines > 2 &&
+              trimmedPTextOriginal.length < 40 &&
+              (
+                upperText.includes("HIỆU TRƯỞNG") ||
+                upperText.includes("GIÁM ĐỐC") ||
+                upperText.includes("CHỦ TỊCH") ||
+                upperText.includes("BÍ THƯ") ||
+                upperText.includes("BỘ TRƯỞNG") ||
+                upperText.startsWith("KT. ") ||
+                upperText.startsWith("TM. ") ||
+                upperText.startsWith("T/M ") ||
+                upperText === "THỦ TRƯỞNG ĐƠN VỊ" ||
+                upperText === "CHỦ TỌA" ||
+                upperText === "THƯ KÝ" ||
+                upperText === "NGƯỜI LẬP" ||
+                upperText === "NGƯỜI VIẾT"
+              )
+            )
+          ) {
+              isBodyArea = false;
+          }
+      }
+
+      const isTable = isTableParagraph(p);
+      const rawTextForEmptyCheck = pText.replace(/[\s\u200B-\u200D\uFEFF\xA0]+/g, '');
+
+      if (isBodyArea && rawTextForEmptyCheck.length === 0 && !isTable) {
+          const hasDrawing = getNodes(p, "drawing").length > 0;
+          const hasPict = getNodes(p, "pict").length > 0;
+          const hasObject = getNodes(p, "object").length > 0;
+          const hasSectPr = getNodes(p, "sectPr").length > 0;
+
+          let hasPageBreak = false;
+          const brs = getNodes(p, "br");
+
+          for (const br of brs) {
+            if (
+              br.getAttribute("w:type") === "page" ||
+              br.getAttributeNS(W_NS, "type") === "page"
+            ) {
+              hasPageBreak = true;
+              break;
+            }
+          }
+
+          const hasContent = hasDrawing || hasPict || hasObject || hasSectPr || hasPageBreak;
+
+          if (!hasContent) {
+            p.parentNode?.removeChild(p);
+            continue;
+          }
+      }
+
+      if (isTable) continue;
+
+      const pPr = getOrCreate(p, "w:pPr");
+
+      if (
+        shouldAddSingleLineBeforeBody &&
+        isBodyArea &&
+        trimmedPTextOriginal.length > 0 &&
+        !isTable
+      ) {
+        addSpaceBeforeMainContent = true;
+        shouldAddSingleLineBeforeBody = false;
+      }
+
+      let startTrimmed = false;
+      const runsForTrim = getNodes(p, "r");
+
+      for (const r of runsForTrim) {
+          if (startTrimmed) break;
+
+          const children = Array.from(r.childNodes);
+
+          for (const child of children) {
+              const name = child.nodeName.replace("w:", "");
+
+              if (name === "tab") {
+                r.removeChild(child);
+              } else if (name === "t") {
+                  if (child.textContent) {
+                      const original = child.textContent;
+                      const trimmed = original.replace(/^[\s\xA0]+/, '');
+
+                      child.textContent = trimmed;
+
+                      if (trimmed.length > 0) {
+                        startTrimmed = true;
+                        break;
+                      }
+                  }
+              } else if (name === "drawing" || name === "pict") {
+                startTrimmed = true;
+                break;
+              }
+          }
+      }
+
+      const contextualSpacing = getNodes(pPr, "contextualSpacing")[0];
+      if (contextualSpacing) contextualSpacing.parentNode?.removeChild(contextualSpacing);
+
+      if (finalOptions.isCongVan) {
+          if (upperText.startsWith("KÍNH GỬI:") || upperText === "KÍNH GỬI") {
+              inKinhGuiBlock = true;
+
+              const jc = getOrCreate(pPr, "w:jc");
+              setAttr(jc, "val", "left");
+
+              const ind = getOrCreate(pPr, "w:ind");
+              setAttr(ind, "left", "2160");
+              setAttr(ind, "right", "0");
+              setAttr(ind, "firstLine", "0");
+              ind.removeAttributeNS(W_NS, "hanging");
+              ind.removeAttribute("w:hanging");
+
+              const spacing = getOrCreate(pPr, "w:spacing");
+              setAttr(spacing, "before", "240");
+              setAttr(spacing, "after", "0");
+
+              const targetSize = finalOptions.font.sizeNormal * 2;
+              const runs = getNodes(p, "r");
+
+              for (const r of runs) {
+                  const rPr = getOrCreate(r, "w:rPr");
+
+                  forceBoldNode(rPr);
+
+                  const iEl = getNodes(rPr, "i")[0];
+                  if (iEl) rPr.removeChild(iEl);
+
+                  const iCsEl = getNodes(rPr, "iCs")[0];
+                  if (iCsEl) rPr.removeChild(iCsEl);
+
+                  const sz = getOrCreate(rPr, "w:sz");
+                  setAttr(sz, "val", String(targetSize));
+
+                  const szCs = getOrCreate(rPr, "w:szCs");
+                  setAttr(szCs, "val", String(targetSize));
+              }
+
+              forceParagraphBold(pPr);
+              continue;
+          }
+
+          if (inKinhGuiBlock) {
+              if (trimmedPTextOriginal.startsWith("-") || trimmedPTextOriginal.startsWith("+")) {
+                  const jc = getOrCreate(pPr, "w:jc");
+                  setAttr(jc, "val", "left");
+
+                  const ind = getOrCreate(pPr, "w:ind");
+                  setAttr(ind, "left", "2880");
+                  setAttr(ind, "right", "0");
+                  setAttr(ind, "firstLine", "0");
+                  ind.removeAttributeNS(W_NS, "hanging");
+                  ind.removeAttribute("w:hanging");
+
+                  const spacing = getOrCreate(pPr, "w:spacing");
+                  setAttr(spacing, "before", "0");
+                  setAttr(spacing, "after", "0");
+
+                  const targetSize = finalOptions.font.sizeNormal * 2;
+                  const runs = getNodes(p, "r");
+
+                  for (const r of runs) {
+                      const rPr = getOrCreate(r, "w:rPr");
+
+                      forceBoldNode(rPr);
+
+                      const iEl = getNodes(rPr, "i")[0];
+                      if (iEl) rPr.removeChild(iEl);
+
+                      const iCsEl = getNodes(rPr, "iCs")[0];
+                      if (iCsEl) rPr.removeChild(iCsEl);
+
+                      const sz = getOrCreate(rPr, "w:sz");
+                      setAttr(sz, "val", String(targetSize));
+
+                      const szCs = getOrCreate(rPr, "w:szCs");
+                      setAttr(szCs, "val", String(targetSize));
+                  }
+
+                  forceParagraphBold(pPr);
+                  continue;
+              } else if (trimmedPTextOriginal.length > 0) {
+                inKinhGuiBlock = false;
+                addSpaceBeforeMainContent = true;
+              }
+          }
+      }
+
+      let isDecisionSpecialLine = false;
+      let normalizedDecisionSpecialText = "";
+
+      if (
+        (detectedDocType === "QUYẾT ĐỊNH" || finalOptions.isDecision === true) &&
+        trimmedPTextOriginal.length > 0
+      ) {
+        if (isSchoolDecision) {
+          if (upperText.startsWith("HIỆU TRƯỞNG")) {
+            isDecisionSpecialLine = true;
+            normalizedDecisionSpecialText = trimmedPTextOriginal.toUpperCase();
+          } else if (upperText === "QUYẾT ĐỊNH" || upperText === "QUYẾT ĐỊNH:") {
+            isDecisionSpecialLine = true;
+            normalizedDecisionSpecialText = "QUYẾT ĐỊNH:";
+          }
+        } else if (isPartyDecision) {
+          if (
+            upperText === "CẤP ỦY CHI BỘ" ||
+            upperText === "CẤP UỶ CHI BỘ" ||
+            upperText === "CHI ỦY CHI BỘ" ||
+            upperText === "CHI UỶ CHI BỘ"
+          ) {
+            isDecisionSpecialLine = true;
+            normalizedDecisionSpecialText = "CẤP ỦY CHI BỘ";
+          } else if (upperText === "QUYẾT ĐỊNH" || upperText === "QUYẾT ĐỊNH:") {
+            isDecisionSpecialLine = true;
+            normalizedDecisionSpecialText = "QUYẾT ĐỊNH";
+          }
+        } else if (upperText === "QUYẾT ĐỊNH:" || upperText === "QUYẾT ĐỊNH") {
+          isDecisionSpecialLine = true;
+          normalizedDecisionSpecialText =
+            upperText === "QUYẾT ĐỊNH:" ? "QUYẾT ĐỊNH:" : "QUYẾT ĐỊNH";
+        }
+      }
+
+      if (isDecisionSpecialLine) {
+        if (normalizedDecisionSpecialText) {
+          const textNodes = getNodes(p, "t");
+
+          if (textNodes.length > 0) {
+            textNodes[0].textContent = normalizedDecisionSpecialText;
+
+            for (let i = 1; i < textNodes.length; i++) {
+              textNodes[i].textContent = "";
+            }
+          }
+        }
+
+        const jc = getOrCreate(pPr, "w:jc");
+        setAttr(jc, "val", "center");
+
+        const spacing = getOrCreate(pPr, "w:spacing");
+        setAttr(spacing, "before", "120");
+        setAttr(spacing, "after", "120");
+        setAttr(spacing, "line", "240");
+        setAttr(spacing, "lineRule", "auto");
+
+        const ind = getOrCreate(pPr, "w:ind");
+        setAttr(ind, "left", "0");
+        setAttr(ind, "right", "0");
+        setAttr(ind, "firstLine", "0");
+        ind.removeAttributeNS(W_NS, "hanging");
+        ind.removeAttribute("w:hanging");
+
+        const targetSize = finalOptions.font.sizeNormal * 2;
+        const runs = getNodes(p, "r");
+
+        for (const r of runs) {
+          const rPr = getOrCreate(r, "w:rPr");
+
+          forceBoldNode(rPr);
+
+          const iEl = getNodes(rPr, "i")[0];
+          if (iEl) rPr.removeChild(iEl);
+
+          const iCsEl = getNodes(rPr, "iCs")[0];
+          if (iCsEl) rPr.removeChild(iCsEl);
+
+          const sz = getOrCreate(rPr, "w:sz");
+          setAttr(sz, "val", String(targetSize));
+
+          const szCs = getOrCreate(rPr, "w:szCs");
+          setAttr(szCs, "val", String(targetSize));
+        }
+
+        forceParagraphBold(pPr);
+        continue;
+      }
+
+      let pTextParsed = "";
+      const runsForText = getNodes(p, "r");
+
+      for (const r of runsForText) {
+          Array.from(r.childNodes).forEach(child => {
+              const name = child.nodeName.replace("w:", "");
+              if (name === "t") pTextParsed += child.textContent;
+              if (name === "tab") pTextParsed += " ";
+          });
+      }
+
+      const trimmedPText = pTextParsed.trim();
+      const lowerPText = trimmedPText.toLowerCase().replace(/^[\-\+*•\s]+/, '');
+
+      const isBasisLine =
+        lowerPText.startsWith("căn cứ") ||
+        lowerPText.startsWith("xét") ||
+        lowerPText.startsWith("theo");
+
+      let isItalicBasis = false;
+
+      if (isBasisLine) {
+        if (isSchoolDecision) {
+          isItalicBasis = true;
+        } else if (isPartyDecision) {
+          isItalicBasis = false;
+        } else if (detectedDocType === "QUYẾT ĐỊNH" || detectedDocType === "NGHỊ QUYẾT") {
+          isItalicBasis = true;
+        }
+      }
+
+      const isRomanHeading = /^(i{1,3}|iv|v|vi{1,3}|ix|x|xi{1,3}|xiv|xv|xvi{1,3}|xix|xx|[IVXLCDM]+)\.[\s\xA0]+/.test(trimmedPText);
+      const isNumberHeading = /^\d+(?:\.\d+)*\.[\s\xA0]+/.test(trimmedPText);
+
+      let isHeading = isRomanHeading || isNumberHeading;
+
+      if (isHeading) {
+          const endsWithPunctuation = /[\.\;\:\,]$/.test(trimmedPText);
+          if (endsWithPunctuation && trimmedPText.length > 50) isHeading = false;
+          if (trimmedPText.length > 150) isHeading = false;
+      }
+
+      if (isRomanHeading && isHeading) {
+          const tNodesForUpper = getNodes(p, "t");
+
+          for (const t of tNodesForUpper) {
+            if (t.textContent) t.textContent = t.textContent.toUpperCase();
+          }
+      }
+
+      const jc = getOrCreate(pPr, "w:jc");
+      setAttr(jc, "val", "both");
+
+      const spacing = getOrCreate(pPr, "w:spacing");
+
+      if (addSpaceBeforeMainContent) {
+        setAttr(spacing, "before", "240");
+        addSpaceBeforeMainContent = false;
+      } else {
+        setAttr(spacing, "before", "0");
+      }
+
+      setAttr(spacing, "after", String(Math.round(finalOptions.paragraph.after * TWIPS_PER_PT)));
+      setAttr(spacing, "line", String(Math.round(finalOptions.paragraph.lineSpacing * 240)));
+      setAttr(spacing, "lineRule", "auto");
+
+      const ind = getOrCreate(pPr, "w:ind");
+      setAttr(ind, "left", "0");
+      setAttr(ind, "right", "0");
+      setAttr(ind, "firstLine", String(Math.round(finalOptions.paragraph.indent * TWIPS_PER_CM)));
+      ind.removeAttributeNS(W_NS, "hanging");
+      ind.removeAttribute("w:hanging");
+
+      const targetSize = finalOptions.font.sizeNormal * 2;
+      const runs = getNodes(p, "r");
+
+      for (const r of runs) {
+          const tNodes = getNodes(r, "t");
+
+          for (const t of tNodes) {
+              if (t.textContent) {
+                  const hasLeadingSpace = /^\s/.test(t.textContent);
+                  const hasTrailingSpace = /\s$/.test(t.textContent);
+
+                  let cleaned = applyCloudDictionary(t.textContent);
+                  cleaned = autoCorrectText(cleanPunctuation(cleaned));
+
+                  if (hasLeadingSpace && !/^\s/.test(cleaned)) cleaned = " " + cleaned;
+                  if (hasTrailingSpace && !/\s$/.test(cleaned)) cleaned = cleaned + " ";
+
+                  t.textContent = cleaned;
+              }
+          }
+
+          const rPr = getOrCreate(r, "w:rPr");
+
+          const sz = getOrCreate(rPr, "w:sz");
+          setAttr(sz, "val", String(targetSize));
+
+          const szCs = getOrCreate(rPr, "w:szCs");
+          setAttr(szCs, "val", String(targetSize));
+
+          const uNode = getNodes(rPr, "u")[0];
+
+          if (uNode) {
+            const newU = doc.createElementNS(W_NS, "w:u");
+            setAttr(
+              newU,
+              "val",
+              uNode.getAttributeNS(W_NS, "val") ||
+              uNode.getAttribute("w:val") ||
+              "single"
+            );
+            rPr.appendChild(newU);
+          }
+
+          if (isHeading) forceBoldNode(rPr);
+
+          if (isBasisLine) {
+              if (isItalicBasis) {
+                const iEl = getOrCreate(rPr, "w:i");
+                setAttr(iEl, "val", "true");
+
+                const iCsEl = getOrCreate(rPr, "w:iCs");
+                setAttr(iCsEl, "val", "true");
+              } else {
+                const iEl = getNodes(rPr, "i")[0];
+                if (iEl) rPr.removeChild(iEl);
+
+                const iCsEl = getNodes(rPr, "iCs")[0];
+                if (iCsEl) rPr.removeChild(iCsEl);
+              }
+
+              removeBoldNode(rPr);
+          }
+      }
+
+      if (isHeading) forceParagraphBold(pPr);
+    }
+
+    const forceNormalizeChiBoDecisionAuthorityCommand = (): void => {
+      if (!body) return;
+
+      const normalizeForChiBoForce = (value: string): string => {
+        return String(value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[Đđ]/g, "D")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toUpperCase();
+      };
+
+      const stripBulletForChiBoForce = (value: string): string => {
+        return normalizeForChiBoForce(value)
+          .replace(/^[-+*•–—\s]+/, "")
+          .trim();
+      };
+
+      const getLocalNameForChiBoForce = (node: Node): string => {
+        const name = (node as Element).localName || node.nodeName || "";
+        return name.includes(":") ? name.split(":").pop() || name : name;
+      };
+
+      const getBlockTextForChiBoForce = (node: Node | null | undefined): string => {
+        return String(node?.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+      };
+
+      const isLegalBasisLineForChiBoForce = (text: string): boolean => {
+        const t = stripBulletForChiBoForce(text);
+
+        return (
+          t.startsWith("CAN CU") ||
+          t.startsWith("XET") ||
+          t.startsWith("THEO") ||
+          t.startsWith("THUC HIEN")
+        );
+      };
+
+      const isArticleOneLineForChiBoForce = (text: string): boolean => {
+        const t = stripBulletForChiBoForce(text);
+        return /^DIEU\s+1[\.\:]/.test(t) || /^DIEU\s+1\s+/.test(t);
+      };
+
+      const isDecisionTitleLineForChiBoForce = (text: string): boolean => {
+        const t = normalizeForChiBoForce(text);
+        return t === "QUYET DINH" || t === "QUYET DINH:";
+      };
+
+      const isChiBoDecisionDocumentForForce = (): boolean => {
+        const allText = normalizeForChiBoForce(body.textContent || "");
+        const optionDocType = normalizeForChiBoForce(String((finalOptions as any).docType || ""));
+        const specialType = normalizeForChiBoForce(String((finalOptions as any).specialDocumentType || ""));
+
+        return (
+          finalOptions.isDecision === true &&
+          (
+            allText.includes("CHI BO QUYET DINH") ||
+            allText.includes("CAP UY CHI BO") ||
+            allText.includes("CHI UY CHI BO") ||
+            allText.includes("CHI BO TRUONG") ||
+            allText.includes("DANG UY XA") ||
+            optionDocType.includes("CHI BO") ||
+            optionDocType.includes("CAP UY CHI BO") ||
+            specialType.includes("CHI BO") ||
+            specialType.includes("CAP UY CHI BO") ||
+            (
+              allText.includes("DANG CONG SAN VIET NAM") &&
+              allText.includes("CHI BO")
+            )
+          )
+        );
+      };
+
+      if (!isChiBoDecisionDocumentForForce()) return;
+
+      const blocks = Array.from(body.childNodes).filter(
+        (node): node is Element => node.nodeType === 1
+      );
+
+      let firstDecisionTitleIndex = -1;
+      let lastLegalBasisIndex = -1;
+      let firstArticleOneIndex = -1;
+
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (getLocalNameForChiBoForce(block) !== "p") continue;
+
+        const text = getBlockTextForChiBoForce(block);
+        if (!text) continue;
+
+        if (firstDecisionTitleIndex < 0 && isDecisionTitleLineForChiBoForce(text)) {
+          firstDecisionTitleIndex = i;
+          continue;
+        }
+
+        if (firstDecisionTitleIndex < 0) continue;
+
+        if (isLegalBasisLineForChiBoForce(text)) {
+          lastLegalBasisIndex = i;
+          continue;
+        }
+
+        if (lastLegalBasisIndex >= 0 && isArticleOneLineForChiBoForce(text)) {
+          firstArticleOneIndex = i;
+          break;
+        }
+      }
+
+      if (lastLegalBasisIndex < 0 || firstArticleOneIndex < 0) return;
+
+      const zoneBlocks = blocks
+        .slice(lastLegalBasisIndex + 1, firstArticleOneIndex)
+        .filter(block => getLocalNameForChiBoForce(block) === "p");
+
+      const insertBeforeBlock = blocks[firstArticleOneIndex];
+
+      const hardP = doc.createElementNS(W_NS, "w:p");
+      const pPr = getOrCreate(hardP, "w:pPr");
+
+      const jc = getOrCreate(pPr, "w:jc");
+      setAttr(jc, "val", "center");
+
+      const ind = getOrCreate(pPr, "w:ind");
+      setAttr(ind, "left", "0");
+      setAttr(ind, "right", "0");
+      setAttr(ind, "firstLine", "0");
+      ind.removeAttributeNS(W_NS, "hanging");
+      ind.removeAttribute("w:hanging");
+
+      const spacing = getOrCreate(pPr, "w:spacing");
+      setAttr(spacing, "before", "240");
+      setAttr(spacing, "after", "240");
+      setAttr(spacing, "line", "240");
+      setAttr(spacing, "lineRule", "auto");
+
+      forceParagraphBold(pPr);
+
+      const r = doc.createElementNS(W_NS, "w:r");
+      const rPr = getOrCreate(r, "w:rPr");
+
+      const rFonts = getOrCreate(rPr, "w:rFonts");
+      setAttr(rFonts, "ascii", finalOptions.font.family);
+      setAttr(rFonts, "hAnsi", finalOptions.font.family);
+      setAttr(rFonts, "cs", finalOptions.font.family);
+      setAttr(rFonts, "eastAsia", finalOptions.font.family);
+
+      forceBoldNode(rPr);
+
+      const sz = getOrCreate(rPr, "w:sz");
+      setAttr(sz, "val", "28");
+
+      const szCs = getOrCreate(rPr, "w:szCs");
+      setAttr(szCs, "val", "28");
+
+      const t = doc.createElementNS(W_NS, "w:t");
+      t.textContent = "CẤP ỦY CHI BỘ QUYẾT ĐỊNH";
+
+      r.appendChild(t);
+      hardP.appendChild(r);
+
+      body.insertBefore(hardP, insertBeforeBlock);
+
+      zoneBlocks.forEach(block => {
+        if (block.parentNode === body) {
+          body.removeChild(block);
+        }
+      });
+
+      (finalOptions as any).headerType = HeaderType.PARTY;
+      (finalOptions as any).isChiBoDecision = true;
+      (finalOptions as any).isPartyDecision = true;
+      (finalOptions as any).specialDocumentType =
+        (finalOptions as any).specialDocumentType || "quyet-dinh-chi-bo";
+
+      logs.push("QuyetDinhChiBo FORCE: replaced authority command zone with CẤP ỦY CHI BỘ QUYẾT ĐỊNH");
+    };
+
+    forceNormalizeChiBoDecisionAuthorityCommand();
+
+    if (finalOptions.headerType !== HeaderType.NONE && body) {
+        const headerTable = createHeaderTemplate(doc, finalOptions);
+
+        if (body.firstChild) body.insertBefore(headerTable, body.firstChild);
+        else body.appendChild(headerTable);
+
+        /**
+         * BƯỚC 3 - ĐIỀU PHỐI VĂN BẢN ĐẶC BIỆT
+         *
+         * Nếu là Quyết định hành chính nhà trường:
+         * - module specialDocuments/quyetDinhNT.ts sẽ tự chèn Nơi nhận + chữ ký
+         * - nếu có văn bản kèm theo, chữ ký được chèn trước phần kèm theo
+         * - không dùng luồng chữ ký mặc định của docSignature.ts
+         *
+         * Nếu không phải văn bản đặc biệt:
+         * - giữ nguyên luồng cũ bằng createSignatureBlock(...)
+         */
+        const handledBySpecialDocument = insertSpecialDocumentSignatureBlock(
+          doc,
+          finalOptions as any,
+          detectedDocType
+        );
+
+        if (!handledBySpecialDocument) {
+          const sectPrs = getNodes(doc, "sectPr");
+          const lastSectPr = sectPrs.length > 0 ? sectPrs[sectPrs.length - 1] : null;
+
+          const blankP = doc.createElementNS(W_NS, "w:p");
+          const signatureBlock = createSignatureBlock(doc, finalOptions as any, detectedDocType);
+
+          if (lastSectPr && lastSectPr.parentNode === body) {
+            body.insertBefore(blankP, lastSectPr);
+            body.insertBefore(signatureBlock, lastSectPr);
+          } else {
+            body.appendChild(blankP);
+            body.appendChild(signatureBlock);
+          }
+        }
+    }
+
+    const allRunsInDoc = getNodes(doc, "r");
+
+    for (const r of allRunsInDoc) {
+      getOrCreate(r, "w:rPr");
+    }
+
+    const allPPrsInDoc = getNodes(doc, "pPr");
+
+    for (const pPr of allPPrsInDoc) {
+      getOrCreate(pPr, "w:rPr");
+    }
+
+    const allRPrs = getNodes(doc, "rPr");
+
+    for (const rPr of allRPrs) {
+        const rFonts = getOrCreate(rPr, "w:rFonts");
+        setAttr(rFonts, "ascii", finalOptions.font.family);
+        setAttr(rFonts, "hAnsi", finalOptions.font.family);
+        setAttr(rFonts, "cs", finalOptions.font.family);
+        setAttr(rFonts, "eastAsia", finalOptions.font.family);
+
+        ["asciiTheme", "hAnsiTheme", "cstheme", "eastAsiaTheme"].forEach(theme => {
+          rFonts.removeAttributeNS(W_NS, theme);
+          rFonts.removeAttribute(theme);
+          rFonts.removeAttribute(`w:${theme}`);
+        });
+    }
+
+    const allFinalParagraphs = getNodes(doc, "p");
+    let inNoiNhanZone = false;
+
+    /**
+     * Với Quyết định hành chính nhà trường, phần Nơi nhận đã được module riêng
+     * src/services/specialDocuments/quyetDinhNT.ts tạo khóa cứng.
+     *
+     * Không cho bộ auto-format Nơi nhận mặc định bên dưới can thiệp nữa,
+     * để tránh lỗi đổi chữ hoa/thường như:
+     * "Phòng Văn hoá - Xã hội" -> "Phòng văn hoá - xã Hội".
+     */
+    const skipAutoFormatNoiNhanForSpecialDecision =
+      finalOptions.headerType === HeaderType.SCHOOL &&
+      finalOptions.isDecision === true;
+
+    for (const p of allFinalParagraphs) {
+        if (skipAutoFormatNoiNhanForSpecialDecision) continue;
+
+        const textNodes = getNodes(p, "t");
+
+        if (textNodes.length === 0) continue;
+
+        const fullText = textNodes.map(t => t.textContent || "").join("");
+        const upperFullText = fullText.trim().toUpperCase();
+
+        if (upperFullText === "NƠI NHẬN:" || upperFullText === "NƠI NHẬN") {
+          inNoiNhanZone = true;
+          continue;
+        }
+
+        if (inNoiNhanZone) {
+            if (
+              [
+                "HIỆU TRƯỞNG",
+                "GIÁM ĐỐC",
+                "CHỦ TỊCH",
+                "BÍ THƯ",
+                "T/M",
+                "KT.",
+                "QUYỀN",
+                "CHỦ TỌA",
+                "THƯ KÝ",
+                "NGƯỜI LẬP",
+                "NGƯỜI VIẾT",
+                "TỔ TRƯỞNG",
+                "DUYỆT"
+              ].some(k => upperFullText.includes(k))
+            ) {
+              inNoiNhanZone = false;
+              continue;
+            }
+
+            if (fullText.trim().length > 0 && fullText.trim().length < 150) {
+                let cleanText = fullText.replace(/^[\-\+•\s]+/, '').trim();
+
+                if (!cleanText) continue;
+
+                const prefixMatch = fullText.match(/^[\-\+•\s]+/);
+                const prefix = prefixMatch ? prefixMatch[0] : "";
+
+                if (finalOptions.headerType === HeaderType.PARTY) {
+                    const normalizedReceiver = cleanText
+                      .replace(/[.,;]+$/g, "")
+                      .replace(/\s+/g, " ")
+                      .trim()
+                      .toLowerCase();
+
+                    // Văn bản Đảng không dùng dòng mặc định kiểu văn bản hành chính.
+                    // Nếu "Như trên" đã bị module khác thêm vào trước đó thì xóa khỏi document.
+                    if (
+                      normalizedReceiver === "như trên" ||
+                      normalizedReceiver === "nhu tren"
+                    ) {
+                      p.parentNode?.removeChild(p);
+                      continue;
+                    }
+
+                    let formattedText = cleanText
+                      .replace(/\btpt\b/ig, "TPT")
+                      .replace(/\bhscb\b/ig, "HSCB")
+                      .replace(/\bbt\b/ig, "BT");
+
+                    // Chặn lỗi áp mẫu hành chính sang văn bản Đảng.
+                    // Nghị quyết chi bộ dùng "Lưu: Chi bộ.", không ép thành "Lưu: VT."
+                    if (/^lưu\s*:\s*vt\.?$/i.test(formattedText) || /^luu\s*:\s*vt\.?$/i.test(formattedText)) {
+                      formattedText = "Lưu: Chi bộ.";
+                    }
+
+                    const finalString = prefix + applyCloudDictionary(formattedText);
+
+                    textNodes[0].textContent = finalString;
+
+                    for (let i = 1; i < textNodes.length; i++) {
+                      textNodes[i].textContent = "";
+                    }
+
+                    continue;
+                }
+
+                const lowerText = cleanText.toLowerCase();
+
+                let formattedText = coreSmartFormat(lowerText);
+                formattedText = applyCloudDictionary(autoCorrectText(formattedText));
+
+                if (lowerText.startsWith("lưu") || lowerText.includes("lưu vt")) {
+                  formattedText = formattedText.replace(/[\.\,\;]+$/, '') + ".";
+                } else {
+                  if (!formattedText.endsWith(";")) {
+                    formattedText = formattedText.replace(/[\.\,\;]+$/, '') + ";";
+                  }
+                }
+
+                const finalString = prefix + formattedText;
+
+                textNodes[0].textContent = finalString;
+
+                for (let i = 1; i < textNodes.length; i++) {
+                  textNodes[i].textContent = "";
+                }
+            }
+        }
+    }
+
+    // ============================================================
+    // 🧹 BƯỚC DỌN DẸP CUỐI CÙNG - INLINE
+    // Lệnh mới: Tiêu diệt TOÀN BỘ dòng rỗng không có ngoại lệ
+    // ============================================================
+    const bodyForCleanup = getNodes(doc, "body")[0];
+    if (bodyForCleanup) {
+      const W_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+      const checkParagraphEmpty = (elem: Element): boolean => {
+        const textNodes = elem.getElementsByTagNameNS(W_NAMESPACE, "t");
+        for (let i = 0; i < textNodes.length; i++) {
+          const txt = textNodes[i].textContent || "";
+          if (txt.replace(/[\s\u200B-\u200D\uFEFF\xA0]+/g, '').length > 0) {
+            return false;
+          }
+        }
+
+        if (elem.getElementsByTagNameNS(W_NAMESPACE, "drawing").length > 0) return false;
+        if (elem.getElementsByTagNameNS(W_NAMESPACE, "pict").length > 0) return false;
+        if (elem.getElementsByTagNameNS(W_NAMESPACE, "object").length > 0) return false;
+        if (elem.getElementsByTagNameNS(W_NAMESPACE, "sectPr").length > 0) return false;
+
+        const brs = elem.getElementsByTagNameNS(W_NAMESPACE, "br");
+        for (let i = 0; i < brs.length; i++) {
+          const brType = brs[i].getAttribute("w:type") || brs[i].getAttributeNS(W_NAMESPACE, "type");
+          if (brType === "page") return false;
+        }
+
+        return true;
+      };
+
+      const getLocalName = (elem: Element): string => {
+        const tagName = elem.tagName || elem.nodeName || "";
+        return tagName.includes(":") ? tagName.split(":")[1] : tagName;
+      };
+
+      let totalRemoved = 0;
+
+      // Chỉ cần 1 Pass duy nhất để quét sạch
+      const childNodes = Array.from(bodyForCleanup.childNodes);
+      for (const node of childNodes) {
+        if (node.nodeType === 1) {
+          const elem = node as Element;
+          if (getLocalName(elem) === "p" && checkParagraphEmpty(elem)) {
+            elem.parentNode?.removeChild(elem);
+            totalRemoved++;
+          }
+        }
+      }
+
+      logs.push(`Cleanup: removed ${totalRemoved} empty paragraphs unconditionally`);
+    }
+
+    const serializer = new XMLSerializer();
+
+    const modifyXmlFonts = async (filePath: string) => {
+        const xmlContent = await zip.file(filePath)?.async("string");
+
+        if (xmlContent) {
+            const extDoc = parser.parseFromString(xmlContent, "application/xml");
+
+            const getOrCreateExt = (parent: Element, tagName: string): Element => {
+                let child = parent.getElementsByTagName(tagName)[0];
+
+                if (!child) {
+                  child = extDoc.createElementNS(W_NS, tagName);
+
+                  if (tagName.endsWith("Pr") && parent.firstChild) {
+                    parent.insertBefore(child, parent.firstChild);
+                  } else {
+                    parent.appendChild(child);
+                  }
+                }
+
+                return child;
+            };
+
+            const rPrsExt = getNodes(extDoc, "rPr");
+
+            for (const rPr of rPrsExt) {
+                const rFonts = getOrCreateExt(rPr, "w:rFonts");
+
+                setAttr(rFonts, "ascii", finalOptions.font.family);
+                setAttr(rFonts, "hAnsi", finalOptions.font.family);
+                setAttr(rFonts, "cs", finalOptions.font.family);
+                setAttr(rFonts, "eastAsia", finalOptions.font.family);
+
+                ["asciiTheme", "hAnsiTheme", "cstheme", "eastAsiaTheme"].forEach(theme => {
+                  rFonts.removeAttributeNS(W_NS, theme);
+                  rFonts.removeAttribute(theme);
+                  rFonts.removeAttribute(`w:${theme}`);
+                });
+            }
+
+            enforceSchema(extDoc);
+            zip.file(filePath, serializer.serializeToString(extDoc));
+        }
+    };
+
+    /**
+     * IMPORTANT:
+     * Do NOT rewrite word/styles.xml or word/numbering.xml here.
+     *
+     * Earlier versions called modifyXmlFonts("word/styles.xml") and
+     * modifyXmlFonts("word/numbering.xml"). That made Word report:
+     *   "Word found unreadable content" -> Show Repairs -> "Styles 1".
+     *
+     * The main document XML is already normalized below by walking all w:rPr nodes
+     * in word/document.xml. Rewriting styles.xml is unnecessary for the final
+     * visual result and is riskier because Word is strict about style-part schema
+     * ordering and table-style metadata. Keep the original styles/numbering parts
+     * intact to avoid repair dialogs.
+     */
+    // await modifyXmlFonts("word/styles.xml");
+    // await modifyXmlFonts("word/numbering.xml");
+
+    const sectPrs = getNodes(doc, "sectPr");
+
+    for (const sPr of sectPrs) {
+        let titlePg = sPr.getElementsByTagName("w:titlePg")[0];
+
+        if (!titlePg) {
+          titlePg = doc.createElementNS(W_NS, "w:titlePg");
+          sPr.appendChild(titlePg);
+        }
+
+        ensureDefaultHeaderReferenceFirst(doc, sPr);
+        normalizeSectPrChildOrder(sPr);
+    }
+
+
+
+    if (preservedAttachmentFragment) {
+      decoratePreservedAttachmentFragmentLeadIn(doc, preservedAttachmentFragment);
+      formatPreservedAttachmentFragmentSafely(preservedAttachmentFragment);
+      insertBeforeSectPrOrAppendToBody(body, createPortraitSectionBreakBeforePreservedAttachment(doc, finalOptions));
+      insertBeforeSectPrOrAppendToBody(body, createAttachmentHeaderForPreservedDecision(doc, body));
+      insertBeforeSectPrOrAppendToBody(body, createAttachmentSpacerParagraph(doc, "240"));
+      insertBeforeSectPrOrAppendToBody(body, preservedAttachmentFragment);
+      logs.push("QuyetDinhNT: restored and safely formatted protected attached document/tables after signature");
+    }
+
+    if (finalOptions.headerType === HeaderType.SCHOOL && finalOptions.isDecision === true) {
+      applyMainDecisionAuthoritySpacingForSpecialDecision(body);
+    }
+
+    forceFinalPageMargins(doc, finalOptions);
+
+    if (preservedAttachmentFinalSectPr) {
+      applyFinalAttachmentSectionProperties(doc, body, preservedAttachmentFinalSectPr);
+    }
+
+    // Chuẩn hóa lần cuối mọi w:sectPr sau khi đã chèn section break/phần kèm theo.
+    // Tránh lỗi Word repair do thứ tự headerReference/titlePg/docGrid không đúng.
+    getNodes(doc, "sectPr").forEach(sPr => {
+      ensureDefaultHeaderReferenceFirst(doc, sPr);
+      normalizeSectPrChildOrder(sPr);
+    });
+
+    enforceSchema(doc);
+
+    // Word repair guard: enforceSchema may normalize generic OOXML order,
+    // but for mixed portrait/landscape documents Word is especially strict
+    // about the direct child order inside every w:sectPr. Run this AFTER
+    // enforceSchema so the final serialized document.xml cannot end with
+    // w:docGrid before w:cols / w:titlePg / w:pgNumType.
+    getNodes(doc, "sectPr").forEach(sPr => {
+      ensureDefaultHeaderReferenceFirst(doc, sPr);
+      normalizeSectPrChildOrder(sPr);
+    });
+
+    const fontSize = finalOptions.font.sizeTable * 2;
+    const fontFamily = finalOptions.font.family;
+
+    const draftWatermarkXml = finalOptions.isDraft
+      ? `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:noProof/></w:rPr><w:pict><v:shapetype id="_x0000_t136" coordsize="21600,21600" o:spt="136" adj="10800" path="m@7,l@8,m@5,21600l@6,21600e"><v:formulas><v:f eqn="sum #0 0 10800"/><v:f eqn="prod #0 2 1"/><v:f eqn="sum 21600 0 @1"/><v:f eqn="sum 0 0 @2"/><v:f eqn="sum 21600 0 @3"/><v:f eqn="if @0 @3 0"/><v:f eqn="if @0 21600 @1"/><v:f eqn="if @0 0 @2"/><v:f eqn="if @0 @4 21600"/><v:f eqn="mid @5 @6"/><v:f eqn="mid @8 @5"/><v:f eqn="mid @7 @8"/><v:f eqn="mid @6 @7"/><v:f eqn="sum @6 0 @5"/></v:formulas><v:path textpathok="t" o:connecttype="custom" o:connectlocs="@9,0;@10,10800;@11,21600;@12,10800" o:connectangles="270,180,90,0"/><v:textpath on="t" fitshape="t"/><o:handles v="h,position,#0,bottomRight"/><o:lock v="ext" shapetype="t"/></v:shapetype><v:shape id="WaterMarkObject1" o:spid="_x0000_s1025" type="#_x0000_t136" style="position:absolute;left:0;text-align:left;margin-left:0;margin-top:0;width:500pt;height:120pt;rotation:315;z-index:-251657216;mso-position-horizontal:center;mso-position-horizontal-relative:margin;mso-position-vertical:center;mso-position-vertical-relative:margin" o:allowincell="f" fillcolor="#d9d9d9" stroked="f"><v:fill opacity="0.3"/><v:textpath style="font-family:&quot;${fontFamily}&quot;;font-size:1pt;font-weight:bold" string="DỰ THẢO"/><w10:wrap anchorx="margin" anchory="margin"/></v:shape></w:pict></w:r></w:p>`
+      : '';
+
+    const headerXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w10="urn:schemas-microsoft-com:office:word">
+        <w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="${fontFamily}" w:hAnsi="${fontFamily}" w:cs="${fontFamily}" w:eastAsia="${fontFamily}"/><w:sz w:val="${fontSize}"/><w:szCs w:val="${fontSize}"/></w:rPr><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:rPr><w:rFonts w:ascii="${fontFamily}" w:hAnsi="${fontFamily}" w:cs="${fontFamily}" w:eastAsia="${fontFamily}"/><w:sz w:val="${fontSize}"/><w:szCs w:val="${fontSize}"/></w:rPr><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:rPr><w:rFonts w:ascii="${fontFamily}" w:hAnsi="${fontFamily}" w:cs="${fontFamily}" w:eastAsia="${fontFamily}"/><w:sz w:val="${fontSize}"/><w:szCs w:val="${fontSize}"/><w:noProof/></w:rPr><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:rPr><w:rFonts w:ascii="${fontFamily}" w:hAnsi="${fontFamily}" w:cs="${fontFamily}" w:eastAsia="${fontFamily}"/><w:sz w:val="${fontSize}"/><w:szCs w:val="${fontSize}"/><w:noProof/></w:rPr><w:t></w:t></w:r><w:r><w:rPr><w:rFonts w:ascii="${fontFamily}" w:hAnsi="${fontFamily}" w:cs="${fontFamily}" w:eastAsia="${fontFamily}"/><w:sz w:val="${fontSize}"/><w:szCs w:val="${fontSize}"/></w:rPr><w:fldChar w:fldCharType="end"/></w:r></w:p>
+        ${draftWatermarkXml}
+    </w:hdr>`;
+
+    zip.file("word/header_custom.xml", headerXml);
+
+    let contentTypesXml = await zip.file("[Content_Types].xml")?.async("string");
+
+    if (contentTypesXml && !contentTypesXml.includes('PartName="/word/header_custom.xml"')) {
+      contentTypesXml = contentTypesXml.replace(
+        '</Types>',
+        '<Override PartName="/word/header_custom.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>'
+      );
+      zip.file("[Content_Types].xml", contentTypesXml);
+    }
+
+    let relsXml = await zip.file("word/_rels/document.xml.rels")?.async("string");
+
+    if (relsXml && !relsXml.includes('Target="header_custom.xml"')) {
+      relsXml = relsXml.replace(
+        '</Relationships>',
+        '<Relationship Id="rIdCustomHdr" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header_custom.xml"/></Relationships>'
+      );
+      zip.file("word/_rels/document.xml.rels", relsXml);
+    }
+
+    // Final Word repair guards for generated header/signature tables.
+    normalizeTableXmlForWord(doc);
+    ensureEveryTableCellEndsWithParagraph(doc);
+    normalizeTableXmlForWord(doc);
+
+    // Re-apply sectPr order after the final table/table-cell guards just before serialization.
+    getNodes(doc, "sectPr").forEach(sPr => {
+      ensureDefaultHeaderReferenceFirst(doc, sPr);
+      normalizeSectPrChildOrder(sPr);
+    });
+
+    const newDocXml = serializer.serializeToString(doc);
+    zip.file(docXmlPath, newDocXml);
+
+    const generatedBlob = await zip.generateAsync({ type: "blob" });
+
+    return {
+      success: true,
+      blob: generatedBlob,
+      fileName: `formatted_${file.name}`,
+      logs
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error),
+      logs
+    };
+  }
+};
