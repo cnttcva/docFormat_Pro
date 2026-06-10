@@ -1,0 +1,6 @@
+Mốc Git ổn định đã lưu:
+- Commit ổn định: c930863
+- Nội dung commit: Save stable 1-year MySQL license system
+- Tag ổn định: stable-license-1year-2026-06-10
+- Đã push commit lên GitHub: main
+- Đã cập nhật tag ổn định lên GitHub
