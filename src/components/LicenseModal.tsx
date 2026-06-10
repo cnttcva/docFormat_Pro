@@ -39,7 +39,47 @@ const normalizeSchoolIdInput = (value: string) => {
     .replace(/\s+/g, '_')
     .replace(/[^A-Z0-9_]/g, '');
 };
+const formatDateOnly = (value: any) => {
+  if (!value) return '—';
 
+  try {
+    let dateValue: Date;
+
+    if (typeof value?.toDate === 'function') {
+      dateValue = value.toDate();
+    } else {
+      dateValue = new Date(value);
+    }
+
+    if (Number.isNaN(dateValue.getTime())) return '—';
+
+    return dateValue.toLocaleDateString('vi-VN');
+  } catch {
+    return '—';
+  }
+};
+
+const getLicenseRemainingDays = (expiresAt: any): number | null => {
+  if (!expiresAt) return null;
+
+  try {
+    let expireDate: Date;
+
+    if (typeof expiresAt?.toDate === 'function') {
+      expireDate = expiresAt.toDate();
+    } else {
+      expireDate = new Date(expiresAt);
+    }
+
+    if (Number.isNaN(expireDate.getTime())) return null;
+
+    const now = new Date();
+    const diffMs = expireDate.getTime() - now.getTime();
+    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  } catch {
+    return null;
+  }
+};
 const NoticeBox = ({ notice }: { notice?: LicenseNotice | null }) => {
   if (!notice?.message) return null;
 
@@ -174,14 +214,16 @@ export const LicenseModal = ({
   licenseNotice = null,
 }: any) => {
   const [viewMode, setViewMode] = useState<ViewMode>('SELECT');
-
   const [schoolIdInput, setSchoolIdInput] = useState('');
   const [userName, setUserName] = useState('');
   const [userRole, setUserRole] = useState('');
   const [deviceName, setDeviceName] = useState('');
   const [phone, setPhone] = useState('');
   const [localError, setLocalError] = useState('');
-
+  const licenseExpiresAt = orgInfo?.expiresAt || orgInfo?.expires_at || null;
+  const licenseRemainingDays = getLicenseRemainingDays(licenseExpiresAt);
+  const isLicenseExpiringSoon = licenseRemainingDays !== null && licenseRemainingDays > 0 && licenseRemainingDays <= 5;
+  const isLicenseExpired = licenseRemainingDays !== null && licenseRemainingDays <= 0;
   useEffect(() => {
     if (isOpen && authStatus === 'UNREGISTERED') {
       setViewMode('SELECT');
@@ -366,6 +408,30 @@ export const LicenseModal = ({
                       <CheckCircle2 className="w-3.5 h-3.5" /> ACTIVE
                     </span>
                   </div>
+                  <div className="flex justify-between items-start gap-4 pt-3 border-t border-slate-100">
+  <span className="text-slate-500 text-sm font-medium">Thời hạn bản quyền:</span>
+  <div className="text-right">
+    <p className="font-black text-slate-800">
+      {formatDateOnly(licenseExpiresAt)}
+    </p>
+
+    {licenseRemainingDays === null ? (
+      <p className="text-xs font-bold text-slate-400 mt-1">Chưa có dữ liệu thời hạn</p>
+    ) : isLicenseExpired ? (
+      <p className="text-xs font-black text-rose-600 mt-1">
+        Bản quyền đã hết hạn
+      </p>
+    ) : isLicenseExpiringSoon ? (
+      <p className="text-xs font-black text-amber-600 mt-1">
+        Còn {licenseRemainingDays} ngày - vui lòng gia hạn
+      </p>
+    ) : (
+      <p className="text-xs font-black text-emerald-600 mt-1">
+        Còn hiệu lực {licenseRemainingDays} ngày
+      </p>
+    )}
+  </div>
+</div>
                 </div>
               </div>
 
@@ -481,16 +547,23 @@ export const LicenseModal = ({
             <div className="space-y-5 py-2 animate-fadeIn">
               <div className="text-center">
                 <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-700 text-xs font-black uppercase tracking-wider mb-4">
-                  <Sparkles className="w-4 h-4" /> Chọn hình thức đăng ký
+                  <Sparkles className="w-4 h-4" />
+{licenseNotice?.status === 'EXPIRED'
+  ? 'Gia hạn bản quyền'
+  : 'Chọn hình thức đăng ký'}
                 </div>
 
-                <h3 className="text-xl font-black text-slate-800">
-                  Thiết bị này chưa được cấp quyền sử dụng
-                </h3>
+                <h3 className={`text-xl font-black ${licenseNotice?.status === 'EXPIRED' ? 'text-rose-700' : 'text-slate-800'}`}>
+  {licenseNotice?.status === 'EXPIRED'
+    ? 'Bản quyền của bạn đã hết hạn sử dụng chính thức'
+    : 'Thiết bị này chưa được cấp quyền sử dụng'}
+</h3>
 
-                <p className="text-slate-500 text-sm mt-2 max-w-lg mx-auto leading-6">
-                  Vui lòng chọn đúng trường hợp bên dưới để gửi yêu cầu bản quyền cho thiết bị hiện tại.
-                </p>
+<p className="text-slate-500 text-sm mt-2 max-w-lg mx-auto leading-6">
+  {licenseNotice?.status === 'EXPIRED'
+    ? 'Muốn sử dụng tiếp, vui lòng chọn “Gia hạn bản quyền”.'
+    : 'Vui lòng chọn đúng trường hợp bên dưới để gửi yêu cầu bản quyền cho thiết bị hiện tại.'}
+</p>
               </div>
 
               <DeviceIdBox compact />

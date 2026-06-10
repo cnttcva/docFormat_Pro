@@ -6,9 +6,9 @@
 //
 // CẬP NHẬT TRIAL:
 // - Người dùng đã REGISTERED: dùng chính thức, không qua trial, không trừ lượt.
-// - Người dùng chưa REGISTERED: dùng thử full chức năng 15 lần.
+// - Người dùng chưa REGISTERED: dùng thử full chức năng 5 lần.
 // - Mỗi lần chuẩn hóa DOCX thành công: trừ 1 lượt trial.
-// - Hết 15 lượt: khóa và yêu cầu đăng ký bản quyền.
+// - Hết 5 lượt: khóa và yêu cầu đăng ký bản quyền.
 
 import React, { useState, useEffect } from 'react';
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
@@ -18,7 +18,12 @@ import { Dropzone } from './components/Dropzone';
 import { ProcessingLog } from './components/ProcessingLog';
 import { processDocx } from './services/docxService';
 import { getAccessStatus } from './services/accessService';
-import { consumeTrialUse, getRemainingTrialUses } from './services/trialService';
+import {
+  consumeTrialUse,
+  getRemainingTrialUses,
+  syncTrialStatusFromMysql,
+  TRIAL_LIMIT,
+} from './services/trialService';
 import { DocumentPreview } from './components/DocumentPreview';
 import { UserGuide } from './components/UserGuide';
 import { LicenseModal } from './components/LicenseModal';
@@ -43,19 +48,28 @@ import {
   AlertTriangle,
   UploadCloud,
   X,
+  PhoneCall,
+  Copy,
   LockKeyhole,
   Clock,
   FileDown,
 } from 'lucide-react';
 
 /**
- * PDF Helper local
- * Endpoint server.cjs đang hỗ trợ:
- * GET  /health
- * POST /convert-to-pdf
+ * PDF Helper triển khai cùng ứng dụng Node.js trên hosting.
+ * Khi chạy production tại https://docformatpro.com/VB/:
+ * - GET  /VB/health
+ * - POST /VB/convert-to-pdf
+ *
+ * Khi chạy development bằng Vite:
+ * - Cần cấu hình proxy hoặc dùng Helper local riêng.
  */
-const PDF_CONVERTER_URL = 'http://localhost:8787/convert-to-pdf';
-const PDF_HEALTH_URL = 'http://localhost:8787/health';
+const PDF_HELPER_BASE_URL = import.meta.env.PROD
+  ? import.meta.env.BASE_URL
+  : 'http://localhost:8787/';
+
+const PDF_CONVERTER_URL = `${PDF_HELPER_BASE_URL}convert-to-pdf`;
+const PDF_HEALTH_URL = `${PDF_HELPER_BASE_URL}health`;
 
 const HeroSection = () => (
   <div className="text-center mb-10 space-y-4">
@@ -94,12 +108,14 @@ export default function MainApp() {
   const [result, setResult] = useState<ProcessResult | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showOrgSettings, setShowOrgSettings] = useState(false);
+  const [showRenewToast, setShowRenewToast] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   const [keepOriginalReceivers, setKeepOriginalReceivers] = useState(true);
   const [dictionaryData, setDictionaryData] = useState<any[]>([]);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
 
   const [trialRemaining, setTrialRemaining] = useState<number>(() => getRemainingTrialUses());
+  
   const [trialNotice, setTrialNotice] = useState<string>('');
 
   const [pdfErrorModal, setPdfErrorModal] = useState<{
@@ -281,16 +297,16 @@ export default function MainApp() {
     setStatus(res.success ? ProcessingStatus.SUCCESS : ProcessingStatus.ERROR);
 
     if (res.success && latestAccess.mode === 'trial') {
-      const trialResult = consumeTrialUse();
+      const trialResult = await consumeTrialUse();
 
       setTrialRemaining(trialResult.remaining);
 
       if (!trialResult.ok || trialResult.remaining <= 0) {
         setTrialNotice(
-          'Bạn đã dùng hết 15 lượt dùng thử. Vui lòng đăng ký bản quyền chính thức để tiếp tục sử dụng docFormat Pro.'
-        );
+  `Bạn đã dùng hết ${TRIAL_LIMIT} lượt dùng thử. Vui lòng đăng ký bản quyền chính thức để tiếp tục sử dụng docFormat Pro.`
+);
       } else {
-        setTrialNotice(`Bạn còn ${trialResult.remaining}/15 lượt dùng thử.`);
+        setTrialNotice('');
       }
     }
   };
@@ -510,7 +526,7 @@ export default function MainApp() {
               {authStatus === 'PENDING'
                 ? 'Yêu cầu bản quyền của thiết bị này đang chờ Admin duyệt. Sau khi được duyệt, bấm kiểm tra trạng thái trong hộp thoại bản quyền.'
                 : isLockedByTrial
-                  ? 'Bạn đã dùng hết 15 lượt dùng thử. Vui lòng đăng ký bản quyền chính thức để tiếp tục sử dụng docFormat Pro.'
+                  ? `Bạn đã dùng hết ${TRIAL_LIMIT} lượt dùng thử. Vui lòng đăng ký bản quyền chính thức để tiếp tục sử dụng docFormat Pro.`
                   : 'Vui lòng đăng ký bản quyền sử dụng để mở khóa toàn bộ sức mạnh của AI Document Engine.'}
             </p>
 
@@ -526,15 +542,33 @@ export default function MainApp() {
             </button>
           </div>
         )}
+        {licenseNotice?.status === 'EXPIRED' && (
+  <div className="mb-10 p-5 bg-rose-50/90 backdrop-blur-xl border border-rose-200 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg shadow-rose-500/10">
+    <div className="text-center sm:text-left">
+      <h3 className="text-base font-black text-rose-800">
+        Bản quyền của bạn đã hết hạn sử dụng chính thức
+      </h3>
+      <p className="text-sm font-semibold text-rose-700 mt-1">
+        Muốn sử dụng tiếp, vui lòng chọn “Gia hạn bản quyền”.
+      </p>
+    </div>
 
-        {canUseApp && isTrialMode && (
+    <button
+  onClick={() => setShowRenewToast(true)}
+  className="px-6 py-3 bg-gradient-to-r from-rose-600 to-red-600 text-white rounded-full text-sm font-bold shadow-lg shadow-rose-500/20 hover:scale-105 transition-all"
+>
+  Gia hạn bản quyền
+</button>
+  </div>
+)}
+        {canUseApp && isTrialMode && licenseNotice?.status !== 'EXPIRED' && (
           <div className="mb-10 p-5 bg-amber-50/90 backdrop-blur-xl border border-amber-200 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg shadow-amber-100/50">
             <div className="text-center sm:text-left">
               <h3 className="text-base font-black text-amber-800">
                 Đang sử dụng bản dùng thử
               </h3>
               <p className="text-sm font-semibold text-amber-700 mt-1">
-                Bạn còn {trialRemaining}/15 lượt chuẩn hóa tài liệu. Sau khi hết lượt, vui lòng đăng ký bản quyền chính thức.
+                Bạn còn {trialRemaining}/{TRIAL_LIMIT} lượt chuẩn hóa tài liệu. Sau khi hết lượt, vui lòng đăng ký bản quyền chính thức.
               </p>
               {trialNotice && (
                 <p className="text-xs font-bold text-amber-600 mt-2">
@@ -753,7 +787,83 @@ export default function MainApp() {
       </main>
 
       <FooterSection />
+      {showRenewToast && (
+  <div className="fixed bottom-6 right-6 z-[9999] w-[calc(100vw-24px)] max-w-md">
+    <div className="rounded-3xl border border-rose-200 bg-white shadow-2xl overflow-hidden">
+      <div className="bg-gradient-to-r from-rose-600 via-red-500 to-orange-500 px-5 py-4 text-white">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-2xl bg-white/15 p-2 backdrop-blur">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-base font-extrabold leading-6">
+                Bản quyền đã hết hạn
+              </h4>
+              <p className="text-sm text-white/90 mt-1 leading-5">
+                Vui lòng liên hệ để được hướng dẫn gia hạn bản quyền.
+              </p>
+            </div>
+          </div>
 
+          <button
+            onClick={() => setShowRenewToast(false)}
+            className="rounded-full p-2 hover:bg-white/15 transition"
+            aria-label="Đóng thông báo"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="p-5">
+        <div className="rounded-2xl bg-rose-50 border border-rose-100 p-4">
+          <p className="text-sm font-semibold text-slate-800 leading-6">
+            Bạn vui lòng liên hệ Quản trị hệ thống DocFormat Pro qua số điện thoại/Zalo để được hướng dẫn gia hạn bản quyền.
+          </p>
+
+          <div className="mt-3 flex items-center gap-3 rounded-2xl bg-white border border-slate-200 px-4 py-3">
+            <div className="rounded-xl bg-rose-100 p-2">
+              <PhoneCall className="w-5 h-5 text-rose-600" />
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+                Số điện thoại / Zalo
+              </p>
+              <p className="text-lg font-extrabold text-slate-900">
+                0973225722
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-col sm:flex-row gap-3">
+          <button
+            onClick={() => window.open('https://zalo.me/0973225722', '_blank')}
+            className="flex-1 rounded-2xl bg-gradient-to-r from-blue-600 to-cyan-500 px-4 py-3 text-sm font-bold text-white shadow-md hover:scale-[1.02] transition"
+          >
+            Liên hệ Zalo
+          </button>
+
+          <button
+            onClick={() => navigator.clipboard.writeText('0973225722')}
+            className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 transition inline-flex items-center justify-center gap-2"
+          >
+            <Copy className="w-4 h-4" />
+            Sao chép số
+          </button>
+        </div>
+
+        <button
+          onClick={() => setShowRenewToast(false)}
+          className="mt-3 w-full rounded-2xl bg-slate-100 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-200 transition"
+        >
+          Đóng
+        </button>
+      </div>
+    </div>
+  </div>
+)}
       <LicenseModal
         isOpen={showOrgSettings}
         onClose={closeModal}

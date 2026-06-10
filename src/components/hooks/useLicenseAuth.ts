@@ -38,6 +38,98 @@ const DEVICE_STORAGE_KEY = 'docFormat_deviceId';
 const ORG_STORAGE_KEY = 'docFormat_OrgInfo';
 const PENDING_STORAGE_KEY = 'docFormat_PendingAuth';
 
+const getLicenseApiBaseUrl = () => {
+  const baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
+  return `${baseUrl}/api/license`;
+};
+
+const postLicenseApi = async <TResponse,>(path: string, payload: Record<string, unknown>): Promise<TResponse> => {
+  const response = await fetch(`${getLicenseApiBaseUrl()}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || data.ok !== true) {
+  const apiError = new Error(
+    data.error || `API cấp phép trả lỗi HTTP ${response.status}.`
+  ) as Error & { data?: any; response?: { data?: any; status?: number } };
+
+  apiError.data = data;
+  apiError.response = {
+    data,
+    status: response.status,
+  };
+
+  throw apiError;
+}
+
+  return data as TResponse;
+};
+
+type ClientLicenseRequestResponse = {
+  ok: boolean;
+  service: string;
+  alreadyPending?: boolean;
+  alreadyLicensed?: boolean;
+  requestId?: string | null;
+  requestType?: 'NEW_SCHOOL' | 'EXISTING_SCHOOL';
+  schoolId?: string | null;
+  requestedSchoolId?: string | null;
+  licenseDocId?: string | null;
+  orgName?: string | null;
+  deviceId: string;
+  deviceName?: string;
+  userName?: string;
+  userRole?: string;
+  phone?: string;
+  status: 'PENDING' | 'ACTIVE' | 'APPROVED' | 'REJECTED' | 'REVOKED' | 'BLOCKED';
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  message?: string;
+};
+type ClientLicenseStatusResponse = {
+  ok: boolean;
+  service: string;
+  status: 'ACTIVE' | 'UNREGISTERED' | 'REVOKED' | 'BLOCKED' | 'LICENSE_INACTIVE';
+  device?: {
+    id?: string;
+    firestoreDocId?: string;
+    licenseDocId?: string;
+    schoolId?: string;
+    orgName?: string;
+    deviceId?: string;
+    deviceName?: string;
+    userName?: string;
+    userRole?: string;
+    phone?: string;
+    status?: string;
+    activatedAt?: string | null;
+    lastSeenAt?: string | null;
+  };
+  license?: {
+    id?: string;
+    firestoreDocId?: string;
+    activationCode?: string;
+    schoolId?: string;
+    orgName?: string;
+    licenseType?: string;
+    status?: string;
+    maxDevices?: number;
+    activeDeviceCount?: number;
+    governingBody?: string;
+    location?: string;
+    partyCell?: string;
+    partyUpper?: string;
+    departments?: any[];
+    receivers?: any[];
+  };
+  error?: string;
+};
 /**
  * Danh sách collection có thể chứa CSDL nhân sự.
  *
@@ -494,9 +586,90 @@ export const useLicenseAuth = () => {
     setIsCheckingLicense(true);
 
     try {
-      const deviceId = getOrCreateDeviceId();
-      const deviceRef = doc(db, 'licenseDevices', deviceId);
-      const deviceSnap = await getDoc(deviceRef);
+  const deviceId = getOrCreateDeviceId();
+
+  try {
+    const mysqlStatus = await postLicenseApi<ClientLicenseStatusResponse>('/status', { deviceId });
+
+    if (mysqlStatus.ok && mysqlStatus.status === 'ACTIVE' && mysqlStatus.license) {
+     const newOrgInfo = {
+  id: mysqlStatus.license.firestoreDocId || mysqlStatus.license.id || mysqlStatus.device?.licenseDocId || '',
+  schoolId: mysqlStatus.license.schoolId || mysqlStatus.device?.schoolId || '',
+  orgId: mysqlStatus.license.schoolId || mysqlStatus.device?.schoolId || '',
+  orgName: mysqlStatus.license.orgName || mysqlStatus.device?.orgName || '',
+  licenseType: mysqlStatus.license.licenseType || '',
+  status: 'ACTIVE',
+  licenseStatus: 'ACTIVE',
+  licenseSource: 'mysql',
+  activatedAt: (mysqlStatus.license as any)?.activatedAt || (mysqlStatus.license as any)?.activated_at || null,
+  expiresAt: (mysqlStatus.license as any)?.expiresAt || (mysqlStatus.license as any)?.expires_at || null,
+  renewRequestedAt: (mysqlStatus.license as any)?.renewRequestedAt || (mysqlStatus.license as any)?.renew_requested_at || null,
+  renewedAt: (mysqlStatus.license as any)?.renewedAt || (mysqlStatus.license as any)?.renewed_at || null,
+  governingBody: mysqlStatus.license.governingBody || '',
+  location: mysqlStatus.license.location || '',
+  partyCell: mysqlStatus.license.partyCell || '',
+  partyUpper: mysqlStatus.license.partyUpper || '',
+  departments: mysqlStatus.license.departments || [],
+  receivers: mysqlStatus.license.receivers || [],
+  maxDevices: mysqlStatus.license.maxDevices || 15,
+  activeDeviceCount: mysqlStatus.license.activeDeviceCount || 0,
+
+  staffDepartments: [],
+  staff: [],
+  personnel: [],
+  schoolStaff: [],
+  humanResources: [],
+  staffDatabase: [],
+};
+
+      saveRegisteredOrg(newOrgInfo);
+      localStorage.removeItem(PENDING_STORAGE_KEY);
+
+      setOrgInfo(newOrgInfo);
+      setPendingAuth(null);
+      setAuthStatus('REGISTERED');
+
+      if (!silent) {
+        alert('Thiết bị đã được cấp phép. Hệ thống đã mở khóa.');
+      }
+
+      return true;
+    }
+  } catch (mysqlError) {
+  const mysqlErrorData =
+    (mysqlError as any)?.response?.data ||
+    (mysqlError as any)?.data ||
+    {};
+
+  if (mysqlErrorData?.status === 'EXPIRED') {
+    clearLocalLicense();
+    localStorage.removeItem(ORG_STORAGE_KEY);
+
+    setOrgInfo(undefined);
+    setPendingAuth(null);
+    setAuthStatus('UNREGISTERED');
+
+    setLicenseNotice({
+      type: 'ERROR',
+      status: 'EXPIRED',
+      message:
+        'Bản quyền của bạn đã hết hạn sử dụng chính thức. Muốn sử dụng tiếp, vui lòng chọn Gia hạn bản quyền.',
+    });
+
+    if (!silent) {
+      alert(
+        'Bản quyền của bạn đã hết hạn sử dụng chính thức. Muốn sử dụng tiếp, vui lòng chọn Gia hạn bản quyền.'
+      );
+    }
+
+    return false;
+  }
+
+  console.warn('Không kiểm tra được license MySQL, chuyển sang kiểm tra Firebase cũ:', mysqlError);
+}
+
+  const deviceRef = doc(db, 'licenseDevices', deviceId);
+  const deviceSnap = await getDoc(deviceRef);
 
       if (!deviceSnap.exists()) {
         const latestRequest = await findLatestRequestByDeviceId(deviceId);
@@ -649,10 +822,24 @@ export const useLicenseAuth = () => {
         return false;
       }
 
-      const newOrgInfo = await buildOrgInfoWithStaffDepartments(
-        licenseData,
-        deviceData.schoolId
-      );
+      const newOrgInfo = {
+  ...licenseData,
+  schoolId: deviceData.schoolId,
+  orgId: deviceData.schoolId,
+  licenseStatus: 'ACTIVE',
+  licenseSource: 'mysql',
+  activatedAt: licenseData?.activatedAt || licenseData?.activated_at || null,
+  expiresAt: licenseData?.expiresAt || licenseData?.expires_at || null,
+  renewRequestedAt: licenseData?.renewRequestedAt || licenseData?.renew_requested_at || null,
+  renewedAt: licenseData?.renewedAt || licenseData?.renewed_at || null,
+  staffDepartments: [],
+  departments: [],
+  staff: [],
+  personnel: [],
+  schoolStaff: [],
+  humanResources: [],
+  staffDatabase: [],
+};
 
       saveRegisteredOrg(newOrgInfo, setOptions, currentOptions);
 
@@ -708,10 +895,24 @@ export const useLicenseAuth = () => {
           const licenseData = await loadLicenseDataFromDevice(existingDevice);
 
           if (licenseData?.status === 'ACTIVE') {
-            const newOrgInfo = await buildOrgInfoWithStaffDepartments(
-              licenseData,
-              existingDevice.schoolId
-            );
+            const newOrgInfo = {
+  ...licenseData,
+  schoolId: existingDevice.schoolId,
+  orgId: existingDevice.schoolId,
+  licenseStatus: 'ACTIVE',
+  licenseSource: 'mysql',
+  activatedAt: licenseData?.activatedAt || licenseData?.activated_at || null,
+  expiresAt: licenseData?.expiresAt || licenseData?.expires_at || null,
+  renewRequestedAt: licenseData?.renewRequestedAt || licenseData?.renew_requested_at || null,
+  renewedAt: licenseData?.renewedAt || licenseData?.renewed_at || null,
+  staffDepartments: [],
+  departments: [],
+  staff: [],
+  personnel: [],
+  schoolStaff: [],
+  humanResources: [],
+  staffDatabase: [],
+};
 
             saveRegisteredOrg(newOrgInfo);
 
@@ -805,18 +1006,17 @@ export const useLicenseAuth = () => {
           status: 'PENDING',
         };
 
-        const docRef = await addDoc(collection(db, 'licenseRequests'), {
-          ...requestPayload,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        const mysqlResult = await postLicenseApi<ClientLicenseRequestResponse>('/request', requestPayload);
 
-        const localPending = {
-          ...requestPayload,
-          id: docRef.id,
-          createdAt: getNowIso(),
-          updatedAt: getNowIso(),
-        };
+const localPending = {
+  ...requestPayload,
+  id: mysqlResult.requestId || '',
+  licenseDocId: mysqlResult.licenseDocId || requestPayload.licenseDocId || '',
+  orgName: mysqlResult.orgName || requestPayload.orgName || '',
+  status: 'PENDING',
+  createdAt: mysqlResult.createdAt || getNowIso(),
+  updatedAt: mysqlResult.updatedAt || getNowIso(),
+};
 
         localStorage.setItem(PENDING_STORAGE_KEY, JSON.stringify(localPending));
         localStorage.removeItem(ORG_STORAGE_KEY);
