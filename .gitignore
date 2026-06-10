@@ -6,3 +6,11 @@ build/
 .env.*.local
 .DS_Store
 .vscode/
+# Backup / temporary files
+*.backup
+*.bak
+*.firebase-backup.*
+*.firestore-old.*
+*.mysql-stage.*
+*.backup-before-*
+src/services/src/
