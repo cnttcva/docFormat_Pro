@@ -5,18 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
     <title>DocFormat Pro | AI Document Engine</title>
-    <meta name="description" content="DocFormat Pro - Ứng dụng chuẩn hóa văn bản hành chính." />
+    <meta
+      name="description"
+      content="DocFormat Pro - Ứng dụng chuẩn hóa văn bản hành chính."
+    />
 
     <!-- PWA / Install App -->
-    <link rel="manifest" href="/manifest.json" />
+    <link rel="manifest" href="%BASE_URL%manifest.json" />
     <meta name="theme-color" content="#4f46e5" />
     <meta name="background-color" content="#f4f7fb" />
     <meta name="application-name" content="DocFormat Pro" />
 
     <!-- Icons -->
-    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
-    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="192x192"
+      href="%BASE_URL%icon-192.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="512x512"
+      href="%BASE_URL%icon-512.png"
+    />
+    <link rel="apple-touch-icon" href="%BASE_URL%icon-192.png" />
 
     <!-- iOS PWA support -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -39,13 +52,11 @@
       }
     </script>
 
-    <link rel="stylesheet" href="/src/index.css" />
-
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker
-            .register('/sw.js')
+            .register('%BASE_URL%sw.js')
             .then(reg => console.log('DocFormat Pro PWA Active:', reg.scope))
             .catch(err => console.log('DocFormat Pro PWA Error:', err));
         });
