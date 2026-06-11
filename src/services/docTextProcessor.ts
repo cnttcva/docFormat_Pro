@@ -3,6 +3,41 @@ import { autoCorrectText } from './textCorrector';
 
 export type DocumentType = 'administrative' | 'party' | 'unknown';
 
+/**
+ * 🔥 FIX: Danh sách từ ghép thông dụng đứng sau "xã/huyện/tỉnh/..."
+ * KHÔNG phải tên địa danh — không được title-case.
+ *
+ * Ví dụ:
+ *   "xã hội" (tính từ/danh từ chung) → KHÔNG đổi thành "Xã Hội"
+ *   "xã Ea Kar" (tên xã) → ĐƯỢC đổi thành "xã Ea Kar"
+ */
+const NON_GEO_COMPOUNDS = new Set([
+    // Sau "xã"
+    "hội", "viên", "luận", "thôn", "giao", "hợp",
+    // Sau "huyện"
+    "ủy", "uỷ",
+    // Sau "tỉnh"
+    "thành", "lỵ", "táo", "ủy", "uỷ",
+    // Sau "phường"
+    // (ít từ ghép, để trống)
+    // Sau "thị trấn"
+    // (luôn là tên riêng)
+    // Sau "thành phố"
+    // (luôn là tên riêng)
+]);
+
+/**
+ * Các cụm 2 từ KHÔNG phải địa danh.
+ * Kiểm tra theo cụm 2 từ để chính xác hơn.
+ */
+const NON_GEO_TWO_WORD_COMPOUNDS = new Set([
+    "hội đồng", "hội nghị", "hội thảo", "hội trường", "hội viên",
+    "đoàn kết", "đoàn thể", "đoàn viên",
+    "nhân dân", "nhân viên", "nhân tài",
+    "thường xuyên", "thường niên", "thường vụ",
+    "viên chức", "luận văn", "luận án",
+]);
+
 export const coreSmartFormat = (lowerText: string) => {
     let formattedText = lowerText.charAt(0).toUpperCase() + lowerText.slice(1);
 
@@ -32,6 +67,15 @@ export const coreSmartFormat = (lowerText: string) => {
 
         formattedText = formattedText.replace(regex, (match, p1, p2) => {
             const stopWords = ["và", "của", "để", "về", "việc", "các", "những"];
+
+            // 🔥 FIX: Bảo vệ từ ghép thông dụng — không phải tên địa danh
+            const words = p2.toLowerCase().trim().split(/\s+/);
+            const firstWord = words[0];
+            const firstTwoWords = words.slice(0, 2).join(" ");
+
+            if (NON_GEO_COMPOUNDS.has(firstWord) || NON_GEO_TWO_WORD_COMPOUNDS.has(firstTwoWords)) {
+                return match; // Giữ nguyên text gốc, không title-case
+            }
 
             const titleCased = p2.split(/\s+/).map((w: string) => {
                 if (stopWords.includes(w.toLowerCase())) return w.toLowerCase();
@@ -91,14 +135,6 @@ type ReceiverFormatOptions = {
     allowNhuTren?: boolean;
 };
 
-/**
- * Format một dòng trong mục "Nơi nhận".
- *
- * Lưu ý:
- * - Văn bản Đảng không được tự thêm "Như trên".
- * - Văn bản Đảng không được đổi "Lưu: Chi bộ." thành "Lưu: VT."
- * - Hàm này chỉ xử lý từng dòng, không tự sinh thêm dòng mới.
- */
 export const formatReceiverText = (
     text: string,
     options: ReceiverFormatOptions = {}
@@ -113,38 +149,25 @@ export const formatReceiverText = (
     const isNhuTren = lowerText.startsWith('như trên') || lowerText.startsWith('nhu tren');
     const isArchiveLine = /^lưu\s*:/i.test(cleanText) || /^luu\s*:/i.test(cleanText);
 
-    // Văn bản Đảng: tuyệt đối không tự đưa "Như trên" vào danh sách nơi nhận.
     if (documentType === 'party' && isNhuTren) {
         return null;
     }
 
-    // Văn bản hành chính: dòng "Như trên" có thể do hàm khác chủ động thêm;
-    // nếu dòng này đã có sẵn thì giữ, không nhân bản.
     if (isNhuTren) {
         if (options.allowNhuTren === false) return null;
         return '- Như trên;';
     }
 
-    // Dòng lưu hồ sơ phải được giữ theo nội dung gốc.
-    // Đặc biệt: văn bản Đảng có thể là "Lưu: Chi bộ.", không được đổi thành "Lưu: VT."
     if (isArchiveLine) {
         let archiveText = cleanText.replace(/[\.\,\;]+$/, '.');
-
-        // Chuẩn hóa nhẹ chữ "lưu" nhưng giữ phần sau dấu hai chấm.
         archiveText = archiveText.replace(/^lưu\s*:/i, 'Lưu:');
         archiveText = archiveText.replace(/^luu\s*:/i, 'Lưu:');
-
         return '- ' + archiveText;
     }
 
     let formattedText = coreSmartFormat(lowerText);
-
-    // Kiểm tra chính tả nơi nhận
     formattedText = autoCorrectText(formattedText);
 
-    // Văn bản Đảng trong file mẫu đang dùng dấu phẩy sau từng dòng nơi nhận,
-    // nhưng để an toàn, ta không ép đổi dấu câu theo loại văn bản ở đây.
-    // Nếu muốn theo hành chính thì hàm gọi bên ngoài có thể chuẩn hóa sau.
     if (!/[;,.]$/.test(formattedText)) {
         formattedText += documentType === 'party' ? ',' : ';';
     } else {

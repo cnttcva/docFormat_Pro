@@ -5,15 +5,15 @@ export const TWIPS_PER_CM = 567;
 export const TWIPS_PER_PT = 20;
 
 export const DOC_TYPE_KEYWORDS = [
-  "NGHỊ QUYẾT", "QUYẾT ĐỊNH", "CHỈ THỊ", "KẾT LUẬN", "QUY CHẾ", "QUY ĐỊNH", 
-  "HƯỚNG DẪN", "BÁO CÁO", "KẾ HOẠCH", "CHƯƠNG TRÌNH", "THÔNG BÁO", "THÔNG TRI", 
-  "CÔNG VĂN", "TỜ TRÌNH", "BIÊN BẢN", "PHƯƠNG ÁN", "ĐỀ ÁN", "DỰ ÁN", 
+  "NGHỊ QUYẾT", "QUYẾT ĐỊNH", "CHỈ THỊ", "KẾT LUẬN", "QUY CHẾ", "QUY ĐỊNH",
+  "HƯỚNG DẪN", "BÁO CÁO", "KẾ HOẠCH", "CHƯƠNG TRÌNH", "THÔNG BÁO", "THÔNG TRI",
+  "CÔNG VĂN", "TỜ TRÌNH", "BIÊN BẢN", "PHƯƠNG ÁN", "ĐỀ ÁN", "DỰ ÁN",
   "HỢP ĐỒNG", "BẢN THỎA THUẬN", "GIẤY ỦY QUYỀN", "GIẤY MỜI", "GIẤY GIỚI THIỆU", "GIẤY NGHỈ PHÉP"
 ];
 
 export const ACRONYMS_LIST = [
-  "UBND", "THCS", "THPT", "BGDĐT", "SGDĐT", "PGDĐT", "ĐTN", "CĐ", "ĐCS", "VN", 
-  "GDĐT", "CNTT", "KHTN", "KHXH", "GDCD", "TDTT", "BCH", "CSCS", "CMHS", "ĐĐ", 
+  "UBND", "THCS", "THPT", "BGDĐT", "SGDĐT", "PGDĐT", "ĐTN", "CĐ", "ĐCS", "VN",
+  "GDĐT", "CNTT", "KHTN", "KHXH", "GDCD", "TDTT", "BCH", "CSCS", "CMHS", "ĐĐ",
   "BĐD", "STT", "GV", "HS", "SKKN",
   "NQ", "QĐ", "CT", "KL", "QC", "QYĐ", "HD", "BC", "KH", "CTR", "TB", "TTR", "CV", "BB",
   "PA", "ĐA", "DA", "HĐ", "BTT", "GUQ", "GM", "GGT", "GNP"
@@ -30,7 +30,7 @@ export const DEFAULT_OPTIONS: any = {
   congVanSummary: "",
   approverTitle: "",
   approverName: "",
-  isDraft: false 
+  isDraft: false
 };
 
 export const setAttr = (el: Element, name: string, value: string) => {
@@ -97,12 +97,10 @@ export const smartNormalizeText = (text: string): string => {
 
             const upperCore = core.toLocaleUpperCase('vi-VN');
 
-            // Giữ nguyên từ viết tắt theo danh mục chuẩn.
             if (ACRONYMS_LIST.includes(upperCore)) {
                 return leading + upperCore + trailing;
             }
 
-            // Giữ nguyên mã/số/ký hiệu như 2025, 2025-2026, 01/KH, QĐ-UBND...
             if (/[0-9\/\-]/.test(core)) {
                 return rawWord;
             }
@@ -138,11 +136,35 @@ export const normalizeSummary = (text: string): string => {
     return summary.trim();
 };
 
+/**
+ * 🔥 FIX: Bảo toàn ellipsis (...) và không thêm space giữa ... và %, ), ", '
+ * Sửa lỗi: "đạt ...%" bị biến thành "đạt... %"
+ */
 export const cleanPunctuation = (text: string): string => {
     let t = text;
+
+    // Bước 1: Bảo vệ ellipsis "..." bằng ký tự tạm thời \uE000 (Private Use Area)
+    t = t.replace(/\.{3,}/g, '\uE000');
+    // Bảo vệ ellipsis Unicode (…) luôn
+    t = t.replace(/\u2026/g, '\uE000');
+
+    // Bước 2: Xóa space TRƯỚC dấu câu
     t = t.replace(/\s+([,\.:;!?])/g, '$1');
-    t = t.replace(/([,\.:;!?])([^\s\d\)"'”’])/g, '$1 $2');
+
+    // Bước 3: Thêm space SAU dấu câu — NHƯNG bỏ qua nếu ký tự kế là:
+    //   - whitespace, số, ), ", ', %, ellipsis-placeholder
+    t = t.replace(/([,\.:;!?])([^\s\d\)\%"'”’\uE000])/g, '$1 $2');
+
+    // Bước 4: Xóa space trong ngoặc
     t = t.replace(/\(\s+/g, '(').replace(/\s+\)/g, ')');
+
+    // Bước 5: Phục hồi ellipsis
+    t = t.replace(/\uE000/g, '...');
+
+    // Bước 6: Sửa khoảng cách giữa "..." và các ký tự đặc biệt
+    t = t.replace(/\.{3}\s+%/g, '...%');
+    t = t.replace(/\.{3}\s+\)/g, '...)');
+
     return t;
 };
 
@@ -192,7 +214,7 @@ export const enforceSchema = (doc: Document) => {
             const elementsMap = new Map<string, Element[]>();
             const unknownElements: Element[] = [];
             Array.from(el.childNodes).forEach(child => {
-                if (child.nodeType === 1) { 
+                if (child.nodeType === 1) {
                     const childName = child.nodeName.includes(":") ? child.nodeName : `w:${child.nodeName}`;
                     if (order.includes(childName)) {
                         if (!elementsMap.has(childName)) elementsMap.set(childName, []);

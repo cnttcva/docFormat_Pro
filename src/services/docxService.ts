@@ -14,7 +14,13 @@ import { autoCorrectText } from './textCorrector';
 import { formatPageStructure } from './docPageLayout';
 import { coreSmartFormat } from './docTextProcessor';
 
-import { cleanHeader, cleanTail, trimParagraphs } from './docCleaner';
+import {
+  cleanHeader,
+  cleanTail,
+  trimParagraphs,
+  removeConsecutiveEmptyParagraphs,
+  removeAllEmptyParagraphsDeep
+} from './docCleaner';
 import { extractReceivers } from './docExtractor';
 
 import {
@@ -1450,6 +1456,97 @@ export const processDocx = async (file: File, options: DocxOptions, dictionary: 
     trimParagraphs(doc);
     cleanHeader(doc, finalOptions.headerType);
     cleanTail(doc);
+    // 🔥 PATCH 2: Tách paragraph có <w:br/> textWrapping
+const splitParagraphsByLineBreaks = (docRef: Document, targetBody: Element) => {
+  const allPs = Array.from(targetBody.getElementsByTagNameNS(W_NS, "p"));
+  let splitCount = 0;
+
+  for (const p of allPs) {
+    if (isTableParagraph(p)) continue;
+
+    const hasLineBreak = Array.from(p.getElementsByTagNameNS(W_NS, "br")).some(br => {
+      const type = br.getAttribute("w:type") || br.getAttributeNS(W_NS, "type");
+      return !type || type === "textWrapping";
+    });
+    if (!hasLineBreak) continue;
+
+    const pPrOriginal = getNodes(p, "pPr")[0];
+    const pPrClone = pPrOriginal ? (pPrOriginal.cloneNode(true) as Element) : null;
+
+    const children = Array.from(p.childNodes).filter(n => {
+      if (n.nodeType !== 1) return false;
+      return (n as Element).localName !== "pPr";
+    }) as Element[];
+
+    const groups: Element[][] = [[]];
+
+    for (const child of children) {
+      if (child.localName !== "r") {
+        groups[groups.length - 1].push(child);
+        continue;
+      }
+
+      const rPr = getNodes(child, "rPr")[0];
+      const rChildren = Array.from(child.childNodes).filter(n => n.nodeType === 1) as Element[];
+
+      let currentRun = docRef.createElementNS(W_NS, "w:r");
+      if (rPr) currentRun.appendChild(rPr.cloneNode(true));
+
+      for (const rc of rChildren) {
+        if (rc.localName === "rPr") continue;
+        if (rc.localName === "br") {
+          const brType = rc.getAttribute("w:type") || rc.getAttributeNS(W_NS, "type");
+          if (!brType || brType === "textWrapping") {
+            const hasContent =
+              currentRun.getElementsByTagNameNS(W_NS, "t").length > 0 ||
+              currentRun.getElementsByTagNameNS(W_NS, "drawing").length > 0;
+            if (hasContent) {
+              groups[groups.length - 1].push(currentRun);
+            }
+            groups.push([]);
+            currentRun = docRef.createElementNS(W_NS, "w:r");
+            if (rPr) currentRun.appendChild(rPr.cloneNode(true));
+          } else {
+            currentRun.appendChild(rc.cloneNode(true));
+          }
+        } else {
+          currentRun.appendChild(rc.cloneNode(true));
+        }
+      }
+
+      const hasContentFinal =
+        currentRun.getElementsByTagNameNS(W_NS, "t").length > 0 ||
+        currentRun.getElementsByTagNameNS(W_NS, "drawing").length > 0;
+      if (hasContentFinal) {
+        groups[groups.length - 1].push(currentRun);
+      }
+    }
+
+    if (groups.length <= 1) continue;
+
+    const parent = p.parentNode;
+    if (!parent) continue;
+
+    const newPs: Element[] = [];
+    for (const group of groups) {
+      if (group.length === 0) continue;
+      const newP = docRef.createElementNS(W_NS, "w:p");
+      if (pPrClone) newP.appendChild(pPrClone.cloneNode(true));
+      for (const el of group) newP.appendChild(el);
+      newPs.push(newP);
+    }
+
+    if (newPs.length === 0) continue;
+
+    for (const newP of newPs) parent.insertBefore(newP, p);
+    parent.removeChild(p);
+    splitCount++;
+  }
+
+  logs.push(`Split ${splitCount} paragraphs by line breaks`);
+};
+
+splitParagraphsByLineBreaks(doc, body);
 
     // 🔥 BẢN VÁ THÔNG MINH: Cỗ máy quét và xóa triệt để Khung Quốc hiệu/Tiêu ngữ Đảng cũ
     if (finalOptions.headerType === HeaderType.PARTY) {
@@ -2287,15 +2384,16 @@ await removeAutomaticNumbering(doc, zip, parser, finalOptions);
         }
       }
 
-      const isRomanHeading = /^(i{1,3}|iv|v|vi{1,3}|ix|x|xi{1,3}|xiv|xv|xvi{1,3}|xix|xx|[IVXLCDM]+)\.[\s\xA0]+/.test(trimmedPText);
-      const isNumberHeading = /^\d+(?:\.\d+)*\.[\s\xA0]+/.test(trimmedPText);
+      const isRomanHeading = /^[IVXLCDM]+[\.\)]\s*\S/i.test(trimmedPText);
+      const isNumberHeading = /^\d+(?:\.\d+)*[\.\)]\s*\S/.test(trimmedPText);
 
       let isHeading = isRomanHeading || isNumberHeading;
 
       if (isHeading) {
-          const endsWithPunctuation = /[\.\;\:\,]$/.test(trimmedPText);
-          if (endsWithPunctuation && trimmedPText.length > 50) isHeading = false;
-          if (trimmedPText.length > 150) isHeading = false;
+          const firstLine = trimmedPText.split(/[\r\n]/)[0].trim();
+          const endsWithPunctuation = /[\.\;\:\,]$/.test(firstLine);
+          if (endsWithPunctuation && firstLine.length > 50) isHeading = false;
+          if (firstLine.length > 200) isHeading = false;
       }
 
       if (isRomanHeading && isHeading) {
@@ -2306,8 +2404,24 @@ await removeAutomaticNumbering(doc, zip, parser, finalOptions);
           }
       }
 
+      const isBulletLine = /^[\-\+\*•]/.test(trimmedPText);
+      const isSubBulletLine = /^[\+]\s/.test(trimmedPText);
+      const isShortLine = trimmedPText.length < 80;
+      const isRomanOrNumHeading = isRomanHeading || isNumberHeading;
+
+      let alignVal: string;
+      if (isRomanOrNumHeading) {
+        alignVal = "left";
+      } else if (isBulletLine || isSubBulletLine) {
+        alignVal = "left";
+      } else if (isShortLine) {
+        alignVal = "left";
+      } else {
+        alignVal = "both";
+      }
+
       const jc = getOrCreate(pPr, "w:jc");
-      setAttr(jc, "val", "both");
+      setAttr(jc, "val", alignVal);
 
       const spacing = getOrCreate(pPr, "w:spacing");
 
@@ -2769,57 +2883,32 @@ await removeAutomaticNumbering(doc, zip, parser, finalOptions);
         }
     }
 
-    // ============================================================
-    // 🧹 BƯỚC DỌN DẸP CUỐI CÙNG - INLINE
-    // Lệnh mới: Tiêu diệt TOÀN BỘ dòng rỗng không có ngoại lệ
-    // ============================================================
-    const bodyForCleanup = getNodes(doc, "body")[0];
-    if (bodyForCleanup) {
-      const W_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    // 🔥 PATCH 5: Cleanup triệt để 2 phase
+    {
+      const removed1 = removeConsecutiveEmptyParagraphs(doc);
+      logs.push(`Cleanup phase 1: removed ${removed1} consecutive empty paragraphs`);
 
-      const checkParagraphEmpty = (elem: Element): boolean => {
-        const textNodes = elem.getElementsByTagNameNS(W_NAMESPACE, "t");
-        for (let i = 0; i < textNodes.length; i++) {
-          const txt = textNodes[i].textContent || "";
-          if (txt.replace(/[\s\u200B-\u200D\uFEFF\xA0]+/g, '').length > 0) {
-            return false;
-          }
+      const protectedTables = new Set<Element>();
+      Array.from(doc.getElementsByTagNameNS(W_NS, "tbl")).forEach(tbl => {
+        const txt = (tbl.textContent || "").toUpperCase();
+        const trimmedTxt = (tbl.textContent || "").trim();
+
+        const isHeaderTbl =
+          txt.includes("CỘNG HÒA") || txt.includes("ĐẢNG CỘNG SẢN");
+        const isSignatureTbl =
+          txt.includes("HIỆU TRƯỞNG") || txt.includes("NƠI NHẬN") ||
+          txt.includes("CHỦ TỊCH") || txt.includes("BÍ THƯ") ||
+          txt.includes("T/M") || txt.includes("KT.") ||
+          txt.includes("TỔ TRƯỞNG") || txt.includes("CHỦ TỌA");
+        const isUnderlineTbl = trimmedTxt === "";
+
+        if (isHeaderTbl || isSignatureTbl || isUnderlineTbl) {
+          protectedTables.add(tbl);
         }
+      });
 
-        if (elem.getElementsByTagNameNS(W_NAMESPACE, "drawing").length > 0) return false;
-        if (elem.getElementsByTagNameNS(W_NAMESPACE, "pict").length > 0) return false;
-        if (elem.getElementsByTagNameNS(W_NAMESPACE, "object").length > 0) return false;
-        if (elem.getElementsByTagNameNS(W_NAMESPACE, "sectPr").length > 0) return false;
-
-        const brs = elem.getElementsByTagNameNS(W_NAMESPACE, "br");
-        for (let i = 0; i < brs.length; i++) {
-          const brType = brs[i].getAttribute("w:type") || brs[i].getAttributeNS(W_NAMESPACE, "type");
-          if (brType === "page") return false;
-        }
-
-        return true;
-      };
-
-      const getLocalName = (elem: Element): string => {
-        const tagName = elem.tagName || elem.nodeName || "";
-        return tagName.includes(":") ? tagName.split(":")[1] : tagName;
-      };
-
-      let totalRemoved = 0;
-
-      // Chỉ cần 1 Pass duy nhất để quét sạch
-      const childNodes = Array.from(bodyForCleanup.childNodes);
-      for (const node of childNodes) {
-        if (node.nodeType === 1) {
-          const elem = node as Element;
-          if (getLocalName(elem) === "p" && checkParagraphEmpty(elem)) {
-            elem.parentNode?.removeChild(elem);
-            totalRemoved++;
-          }
-        }
-      }
-
-      logs.push(`Cleanup: removed ${totalRemoved} empty paragraphs unconditionally`);
+      const removed2 = removeAllEmptyParagraphsDeep(doc, protectedTables);
+      logs.push(`Cleanup phase 2: removed ${removed2} empty paragraphs (deep scan)`);
     }
 
     const serializer = new XMLSerializer();

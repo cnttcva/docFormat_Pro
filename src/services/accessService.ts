@@ -34,6 +34,6 @@ export const getAccessStatus = (isLicensed: boolean): AccessStatus => {
     mode: 'locked',
     trialRemaining: 0,
     message:
-      'Bạn đã dùng hết 15 lượt dùng thử. Vui lòng đăng ký bản quyền chính thức để tiếp tục sử dụng docFormat Pro.',
+      'Bạn đã dùng hết 5 lượt dùng thử. Vui lòng đăng ký bản quyền chính thức để tiếp tục sử dụng docFormat Pro.',
   };
 };

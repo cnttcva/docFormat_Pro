@@ -1,19 +1,6 @@
 // File: src/pages/admin/LicenseManager.tsx
 import React, { useEffect, useState } from 'react';
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDocs,
-  limit,
-  query,
-  runTransaction,
-  serverTimestamp,
-  updateDoc,
-  where,
-  writeBatch,
-} from 'firebase/firestore';
-import { db } from '../../services/firebaseConfig';
+import { auth } from '../../services/firebaseConfig';
 import {
   Activity,
   AlertTriangle,
@@ -47,6 +34,10 @@ type LicenseRecord = {
   activationCode?: string;
   status?: string;
   licenseType?: string;
+    activatedAt?: any;
+  expiresAt?: any;
+  renewRequestedAt?: any;
+  renewedAt?: any;
   maxDevices?: number;
   activeDeviceCount?: number;
   createdAt?: any;
@@ -98,14 +89,6 @@ type DeviceRecord = {
 type DeviceStatusFilter = 'ALL' | 'ACTIVE' | 'REVOKED' | 'BLOCKED' | 'PENDING';
 type SchoolStatusFilter = 'ALL' | 'ACTIVE' | 'BLOCKED' | 'FULL';
 
-const normalizeSchoolId = (value: string) => {
-  return String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, '_')
-    .replace(/[^A-Z0-9_]/g, '');
-};
-
 const normalizeSearch = (value: any) => {
   return String(value || '')
     .toLowerCase()
@@ -143,7 +126,46 @@ const formatDate = (value: any) => {
     return '—';
   }
 };
+const formatDateOnly = (value: any) => {
+  if (!value) return '—';
 
+  try {
+    let dateValue: Date;
+
+    if (typeof value?.toDate === 'function') {
+      dateValue = value.toDate();
+    } else {
+      dateValue = new Date(value);
+    }
+
+    if (Number.isNaN(dateValue.getTime())) return '—';
+
+    return dateValue.toLocaleDateString('vi-VN');
+  } catch {
+    return '—';
+  }
+};
+const getLicenseRemainingDays = (expiresAt: any): number | null => {
+  if (!expiresAt) return null;
+
+  try {
+    let expireDate: Date;
+
+    if (typeof expiresAt?.toDate === 'function') {
+      expireDate = expiresAt.toDate();
+    } else {
+      expireDate = new Date(expiresAt);
+    }
+
+    if (Number.isNaN(expireDate.getTime())) return null;
+
+    const now = new Date();
+    const diffMs = expireDate.getTime() - now.getTime();
+    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  } catch {
+    return null;
+  }
+};
 const getDeviceUsage = (lic: LicenseRecord) => {
   const active = Number(lic.activeDeviceCount || 0);
   const max = Number(lic.maxDevices || 15);
@@ -214,51 +236,100 @@ export default function LicenseManager() {
   const [deviceStatusFilter, setDeviceStatusFilter] = useState<DeviceStatusFilter>('ALL');
   const [schoolStatusFilter, setSchoolStatusFilter] = useState<SchoolStatusFilter>('ALL');
 
+  type LicensingDashboardResponse = {
+    ok: true;
+    counts?: {
+      licenses: number;
+      licenseDevices: number;
+      licenseRequests: number;
+      total: number;
+    };
+    licenses?: LicenseRecord[];
+    licenseDevices?: DeviceRecord[];
+    licenseRequests?: LicenseRequestRecord[];
+  };
+
+  type AdminCommandResponse = {
+    ok: true;
+    error?: string;
+    deletedDeviceCount?: number;
+    activeDeviceCount?: number | null;
+  };
+
+  const getAdminToken = async () => {
+    const currentUser = auth.currentUser;
+
+    if (!currentUser) {
+      throw new Error('Phiên đăng nhập Admin không còn hiệu lực. Vui lòng đăng nhập lại.');
+    }
+
+    return currentUser.getIdToken();
+  };
+
+  const callAdminMysqlApi = async <T extends { ok: boolean; error?: string }>(
+    path: string,
+    options: RequestInit = {}
+  ): Promise<T> => {
+    const token = await getAdminToken();
+    const headers = new Headers(options.headers || {});
+
+    headers.set('Authorization', `Bearer ${token}`);
+
+    if (options.body && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+
+    const response = await fetch(`/VB/api/admin/mysql${path}`, {
+      ...options,
+      headers,
+    });
+
+    let result: T | null = null;
+
+    try {
+      result = (await response.json()) as T;
+    } catch {
+      throw new Error(`API MySQL trả về dữ liệu không hợp lệ (HTTP ${response.status}).`);
+    }
+
+    if (!response.ok || result.ok !== true) {
+      throw new Error(result.error || `API MySQL trả lỗi HTTP ${response.status}.`);
+    }
+
+    return result;
+  };
+
   const fetchAll = async () => {
     setIsLoading(true);
 
     try {
-      const [licenseSnap, requestSnap, deviceSnap] = await Promise.all([
-        getDocs(collection(db, 'licenses')),
-        getDocs(collection(db, 'licenseRequests')),
-        getDocs(collection(db, 'licenseDevices')),
-      ]);
+      const result = await callAdminMysqlApi<LicensingDashboardResponse>('/licensing-dashboard');
 
-      const licenseData: LicenseRecord[] = licenseSnap.docs
-        .map(d => ({
-          id: d.id,
-          ...(d.data() as Omit<LicenseRecord, 'id'>),
-        }))
+      const licenseData: LicenseRecord[] = (Array.isArray(result.licenses) ? result.licenses : [])
         .sort((a, b) => normalizeSearch(a.orgName).localeCompare(normalizeSearch(b.orgName)));
 
-      const requestData: LicenseRequestRecord[] = requestSnap.docs
-        .map(d => ({
-          id: d.id,
-          ...(d.data() as Omit<LicenseRequestRecord, 'id'>),
-        }))
-        .sort(
-          (a, b) =>
-            getTimeValue(b.createdAt || b.updatedAt) -
-            getTimeValue(a.createdAt || a.updatedAt)
-        );
+      const requestData: LicenseRequestRecord[] = (
+        Array.isArray(result.licenseRequests) ? result.licenseRequests : []
+      ).sort(
+        (a, b) =>
+          getTimeValue(b.createdAt || b.updatedAt) -
+          getTimeValue(a.createdAt || a.updatedAt)
+      );
 
-      const deviceData: DeviceRecord[] = deviceSnap.docs
-        .map(d => ({
-          id: d.id,
-          ...(d.data() as Omit<DeviceRecord, 'id'>),
-        }))
-        .sort(
-          (a, b) =>
-            getTimeValue(b.lastSeenAt || b.activatedAt || b.createdAt) -
-            getTimeValue(a.lastSeenAt || a.activatedAt || a.createdAt)
-        );
+      const deviceData: DeviceRecord[] = (
+        Array.isArray(result.licenseDevices) ? result.licenseDevices : []
+      ).sort(
+        (a, b) =>
+          getTimeValue(b.lastSeenAt || b.activatedAt || b.createdAt) -
+          getTimeValue(a.lastSeenAt || a.activatedAt || a.createdAt)
+      );
 
       setLicenses(licenseData);
       setRequests(requestData);
       setDevices(deviceData);
-    } catch (error) {
-      console.error('Lỗi tải dữ liệu bản quyền:', error);
-      alert('Không thể tải dữ liệu bản quyền.');
+    } catch (error: any) {
+      console.error('Lỗi tải dữ liệu bản quyền từ MySQL:', error);
+      alert(error?.message || 'Không thể tải dữ liệu bản quyền từ MySQL.');
     } finally {
       setIsLoading(false);
     }
@@ -267,27 +338,6 @@ export default function LicenseManager() {
   useEffect(() => {
     fetchAll();
   }, []);
-
-  const findLicenseBySchoolId = async (schoolId: string) => {
-    const normalizedSchoolId = normalizeSchoolId(schoolId);
-
-    const q = query(
-      collection(db, 'licenses'),
-      where('schoolId', '==', normalizedSchoolId),
-      limit(1)
-    );
-
-    const snap = await getDocs(q);
-
-    if (snap.empty) return null;
-
-    const licenseDoc = snap.docs[0];
-
-    return {
-      id: licenseDoc.id,
-      data: licenseDoc.data() as Omit<LicenseRecord, 'id'>,
-    };
-  };
 
   const handleApproveRequest = async (req: LicenseRequestRecord) => {
     if (req.status !== 'PENDING') {
@@ -300,186 +350,28 @@ export default function LicenseManager() {
       return;
     }
 
-    const requestDeviceId = req.deviceId;
+    const actionName = req.requestType === 'NEW_SCHOOL'
+      ? 'tạo trường mới và cấp phép thiết bị đầu tiên'
+      : 'cấp phép thiết bị tham gia trường';
+
+    if (!window.confirm(`Xác nhận ${actionName} cho yêu cầu này?`)) return;
+
     setActionLoadingId(req.id);
 
     try {
-      if (req.requestType === 'NEW_SCHOOL') {
-        const schoolId = normalizeSchoolId(req.requestedSchoolId || req.schoolId || '');
+      await callAdminMysqlApi<AdminCommandResponse>(
+        `/license-requests/${encodeURIComponent(req.id)}/approve`,
+        { method: 'POST', body: '{}' }
+      );
 
-        if (!schoolId) {
-          alert('Yêu cầu trường mới thiếu schoolId.');
-          return;
-        }
-
-        const existed = await findLicenseBySchoolId(schoolId);
-
-        if (existed) {
-          alert(`Mã định danh ${schoolId} đã tồn tại. Không thể tạo trường mới trùng mã.`);
-          return;
-        }
-
-        const licenseRef = doc(collection(db, 'licenses'));
-        const requestRef = doc(db, 'licenseRequests', req.id);
-        const deviceRef = doc(db, 'licenseDevices', requestDeviceId);
-
-        await runTransaction(db, async tx => {
-          const requestSnap = await tx.get(requestRef);
-
-          if (!requestSnap.exists()) {
-            throw new Error('Yêu cầu không tồn tại.');
-          }
-
-          const requestData = requestSnap.data() as Partial<LicenseRequestRecord>;
-
-          if (requestData.status !== 'PENDING') {
-            throw new Error('Yêu cầu này đã được xử lý trước đó.');
-          }
-
-          tx.set(licenseRef, {
-            orgName: req.orgName || '',
-            schoolId,
-            governingBody: req.governingBody || '',
-            location: req.location || '',
-            partyUpper: req.partyUpper || '',
-            partyCell: req.partyCell || '',
-            departments: req.departments || '',
-            status: 'ACTIVE',
-            licenseType: 'SCHOOL',
-            maxDevices: 15,
-            activeDeviceCount: 1,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          tx.set(deviceRef, {
-            deviceId: requestDeviceId,
-            schoolId,
-            licenseDocId: licenseRef.id,
-            orgName: req.orgName || '',
-            deviceName: req.deviceName || '',
-            userName: req.userName || '',
-            userRole: req.userRole || '',
-            phone: req.phone || '',
-            status: 'ACTIVE',
-            createdAt: serverTimestamp(),
-            activatedAt: serverTimestamp(),
-            lastSeenAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          tx.update(requestRef, {
-            status: 'APPROVED',
-            licenseDocId: licenseRef.id,
-            approvedAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        });
-
-        alert('Đã tạo trường mới và cấp phép thiết bị đầu tiên.');
-        await fetchAll();
-        return;
-      }
-
-      const schoolId = normalizeSchoolId(req.schoolId || '');
-      let licenseId = req.licenseDocId;
-
-      if (!licenseId && schoolId) {
-        const found = await findLicenseBySchoolId(schoolId);
-        licenseId = found?.id;
-      }
-
-      if (!licenseId) {
-        alert('Không tìm thấy hồ sơ bản quyền của trường.');
-        return;
-      }
-
-      const requestRef = doc(db, 'licenseRequests', req.id);
-      const licenseRef = doc(db, 'licenses', licenseId);
-      const deviceRef = doc(db, 'licenseDevices', requestDeviceId);
-
-      await runTransaction(db, async tx => {
-        const requestSnap = await tx.get(requestRef);
-        const licenseSnap = await tx.get(licenseRef);
-        const deviceSnap = await tx.get(deviceRef);
-
-        if (!requestSnap.exists()) {
-          throw new Error('Yêu cầu không tồn tại.');
-        }
-
-        const requestData = requestSnap.data() as Partial<LicenseRequestRecord>;
-
-        if (requestData.status !== 'PENDING') {
-          throw new Error('Yêu cầu này đã được xử lý trước đó.');
-        }
-
-        if (!licenseSnap.exists()) {
-          throw new Error('Hồ sơ bản quyền của trường không tồn tại.');
-        }
-
-        const licenseData = licenseSnap.data() as Partial<LicenseRecord>;
-        const maxDevices = Number(licenseData.maxDevices || 15);
-        const activeDeviceCount = Number(licenseData.activeDeviceCount || 0);
-
-        if (licenseData.status !== 'ACTIVE') {
-          throw new Error('Bản quyền của trường chưa hoạt động hoặc đã bị khóa.');
-        }
-
-        if (deviceSnap.exists()) {
-          const existingDeviceData = deviceSnap.data() as Partial<DeviceRecord>;
-          const existingStatus = existingDeviceData.status;
-
-          if (existingStatus === 'ACTIVE') {
-            throw new Error('Thiết bị này đã được cấp phép trước đó.');
-          }
-
-          if (existingStatus === 'BLOCKED') {
-            throw new Error('Thiết bị này đang bị khóa. Vui lòng mở khóa hoặc kiểm tra lại trước khi cấp phép.');
-          }
-        }
-
-        if (activeDeviceCount >= maxDevices) {
-          throw new Error(
-            `Đơn vị đã đạt giới hạn ${activeDeviceCount}/${maxDevices} thiết bị. Vui lòng thu hồi thiết bị cũ trước.`
-          );
-        }
-
-        tx.set(
-          deviceRef,
-          {
-            deviceId: requestDeviceId,
-            schoolId: licenseData.schoolId || schoolId,
-            licenseDocId: licenseId,
-            orgName: licenseData.orgName || req.orgName || '',
-            deviceName: req.deviceName || '',
-            userName: req.userName || '',
-            userRole: req.userRole || '',
-            phone: req.phone || '',
-            status: 'ACTIVE',
-            createdAt: serverTimestamp(),
-            activatedAt: serverTimestamp(),
-            lastSeenAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-
-        tx.update(licenseRef, {
-          activeDeviceCount: activeDeviceCount + 1,
-          updatedAt: serverTimestamp(),
-        });
-
-        tx.update(requestRef, {
-          status: 'APPROVED',
-          approvedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      });
-
-      alert('Đã cấp phép thiết bị thành công.');
+      alert(
+        req.requestType === 'NEW_SCHOOL'
+          ? 'Đã tạo trường mới và cấp phép thiết bị đầu tiên.'
+          : 'Đã cấp phép thiết bị thành công.'
+      );
       await fetchAll();
     } catch (error: any) {
-      console.error('Lỗi cấp phép:', error);
+      console.error('Lỗi cấp phép MySQL:', error);
       alert(error?.message || 'Không thể cấp phép yêu cầu này.');
     } finally {
       setActionLoadingId(null);
@@ -492,16 +384,14 @@ export default function LicenseManager() {
     setActionLoadingId(req.id);
 
     try {
-      await updateDoc(doc(db, 'licenseRequests', req.id), {
-        status: 'REJECTED',
-        rejectedAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
+      await callAdminMysqlApi<AdminCommandResponse>(
+        `/license-requests/${encodeURIComponent(req.id)}/reject`,
+        { method: 'POST', body: '{}' }
+      );
       await fetchAll();
-    } catch (error) {
-      console.error('Lỗi từ chối yêu cầu:', error);
-      alert('Không thể từ chối yêu cầu.');
+    } catch (error: any) {
+      console.error('Lỗi từ chối yêu cầu MySQL:', error);
+      alert(error?.message || 'Không thể từ chối yêu cầu.');
     } finally {
       setActionLoadingId(null);
     }
@@ -510,12 +400,19 @@ export default function LicenseManager() {
   const handleDeleteRequest = async (req: LicenseRequestRecord) => {
     if (!window.confirm('Xóa vĩnh viễn yêu cầu này?')) return;
 
+    setActionLoadingId(`delete-request-${req.id}`);
+
     try {
-      await deleteDoc(doc(db, 'licenseRequests', req.id));
+      await callAdminMysqlApi<AdminCommandResponse>(
+        `/license-requests/${encodeURIComponent(req.id)}`,
+        { method: 'DELETE' }
+      );
       await fetchAll();
-    } catch (error) {
-      console.error('Lỗi xóa yêu cầu:', error);
-      alert('Không thể xóa yêu cầu.');
+    } catch (error: any) {
+      console.error('Lỗi xóa yêu cầu MySQL:', error);
+      alert(error?.message || 'Không thể xóa yêu cầu.');
+    } finally {
+      setActionLoadingId(null);
     }
   };
 
@@ -526,16 +423,22 @@ export default function LicenseManager() {
       return;
     }
 
-    try {
-      await updateDoc(doc(db, 'licenses', lic.id), {
-        status: nextStatus,
-        updatedAt: serverTimestamp(),
-      });
+    setActionLoadingId(`status-${lic.id}`);
 
+    try {
+      await callAdminMysqlApi<AdminCommandResponse>(
+        `/licenses/${encodeURIComponent(lic.id)}/status`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ status: nextStatus }),
+        }
+      );
       await fetchAll();
-    } catch (error) {
-      console.error('Lỗi cập nhật trường:', error);
-      alert('Không thể cập nhật trạng thái trường.');
+    } catch (error: any) {
+      console.error('Lỗi cập nhật trạng thái trường MySQL:', error);
+      alert(error?.message || 'Không thể cập nhật trạng thái trường.');
+    } finally {
+      setActionLoadingId(null);
     }
   };
 
@@ -546,16 +449,12 @@ export default function LicenseManager() {
     }
 
     const schoolName = lic.orgName || lic.schoolId || 'đơn vị này';
-
     const confirmMessage =
       `XÓA TRƯỜNG KHỎI DANH SÁCH BẢN QUYỀN?\n\n` +
       `Đơn vị: ${schoolName}\n` +
       `School ID: ${lic.schoolId || '—'}\n\n` +
-      `Hệ thống sẽ xóa:\n` +
-      `- Hồ sơ trường trong collection licenses\n` +
-      `- Toàn bộ thiết bị thuộc trường trong collection licenseDevices\n\n` +
-      `Hệ thống KHÔNG xóa licenseRequests để giữ lịch sử truy vết.\n\n` +
-      `Sau khi xóa, nếu đơn vị muốn dùng lại thì phải đăng ký như TRƯỜNG MỚI.\n\n` +
+      `Hệ thống sẽ xóa hồ sơ license và toàn bộ thiết bị thuộc trường trong MySQL.\n` +
+      `Hệ thống KHÔNG xóa lịch sử license_requests.\n\n` +
       `Bạn chắc chắn muốn xóa?`;
 
     if (!window.confirm(confirmMessage)) return;
@@ -563,44 +462,18 @@ export default function LicenseManager() {
     setActionLoadingId(`delete-school-${lic.id}`);
 
     try {
-      const deviceRefs = new Map<string, any>();
-
-      const byLicenseSnap = await getDocs(
-        query(collection(db, 'licenseDevices'), where('licenseDocId', '==', lic.id))
+      const result = await callAdminMysqlApi<AdminCommandResponse>(
+        `/licenses/${encodeURIComponent(lic.id)}`,
+        { method: 'DELETE' }
       );
-
-      byLicenseSnap.docs.forEach(deviceDoc => {
-        deviceRefs.set(deviceDoc.id, deviceDoc.ref);
-      });
-
-      if (lic.schoolId) {
-        const bySchoolSnap = await getDocs(
-          query(collection(db, 'licenseDevices'), where('schoolId', '==', lic.schoolId))
-        );
-
-        bySchoolSnap.docs.forEach(deviceDoc => {
-          deviceRefs.set(deviceDoc.id, deviceDoc.ref);
-        });
-      }
-
-      const batch = writeBatch(db);
-
-      deviceRefs.forEach(deviceRef => {
-        batch.delete(deviceRef);
-      });
-
-      batch.delete(doc(db, 'licenses', lic.id));
-
-      await batch.commit();
 
       alert(
         `Đã xóa ${schoolName} khỏi danh sách bản quyền.\n` +
-          `Đã xóa kèm ${deviceRefs.size} thiết bị thuộc đơn vị này.`
+        `Đã xóa kèm ${Number(result.deletedDeviceCount || 0)} thiết bị thuộc đơn vị này.`
       );
-
       await fetchAll();
     } catch (error: any) {
-      console.error('Lỗi xóa trường:', error);
+      console.error('Lỗi xóa trường MySQL:', error);
       alert(error?.message || 'Không thể xóa trường.');
     } finally {
       setActionLoadingId(null);
@@ -613,59 +486,18 @@ export default function LicenseManager() {
       return;
     }
 
-    if (!window.confirm(`Thu hồi thiết bị: ${deviceItem.deviceName || deviceItem.deviceId}?`)) {
-      return;
-    }
+    if (!window.confirm(`Thu hồi thiết bị: ${deviceItem.deviceName || deviceItem.deviceId}?`)) return;
 
     setActionLoadingId(`revoke-${deviceItem.id}`);
 
     try {
-      const deviceRef = doc(db, 'licenseDevices', deviceItem.id);
-
-      await runTransaction(db, async tx => {
-        const deviceSnap = await tx.get(deviceRef);
-
-        if (!deviceSnap.exists()) {
-          throw new Error('Thiết bị không tồn tại.');
-        }
-
-        const currentDevice = deviceSnap.data() as Partial<DeviceRecord>;
-
-        if (currentDevice.status !== 'ACTIVE') {
-          throw new Error('Thiết bị này đã bị thu hồi hoặc không còn hoạt động.');
-        }
-
-        let nextActiveDeviceCount: number | null = null;
-        let licenseRef: any = null;
-
-        if (currentDevice.licenseDocId) {
-          licenseRef = doc(db, 'licenses', currentDevice.licenseDocId);
-          const licenseSnap = await tx.get(licenseRef);
-
-          if (licenseSnap.exists()) {
-            const licenseData = licenseSnap.data() as Partial<LicenseRecord>;
-            const activeCount = Number(licenseData.activeDeviceCount || 0);
-            nextActiveDeviceCount = Math.max(0, activeCount - 1);
-          }
-        }
-
-        tx.update(deviceRef, {
-          status: 'REVOKED',
-          revokedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        if (licenseRef && nextActiveDeviceCount !== null) {
-          tx.update(licenseRef, {
-            activeDeviceCount: nextActiveDeviceCount,
-            updatedAt: serverTimestamp(),
-          });
-        }
-      });
-
+      await callAdminMysqlApi<AdminCommandResponse>(
+        `/license-devices/${encodeURIComponent(deviceItem.id)}/revoke`,
+        { method: 'POST', body: '{}' }
+      );
       await fetchAll();
     } catch (error: any) {
-      console.error('Lỗi thu hồi thiết bị:', error);
+      console.error('Lỗi thu hồi thiết bị MySQL:', error);
       alert(error?.message || 'Không thể thu hồi thiết bị.');
     } finally {
       setActionLoadingId(null);
@@ -678,53 +510,18 @@ export default function LicenseManager() {
       return;
     }
 
-    if (!window.confirm(`Khóa thiết bị: ${deviceItem.deviceName || deviceItem.deviceId}?`)) {
-      return;
-    }
+    if (!window.confirm(`Khóa thiết bị: ${deviceItem.deviceName || deviceItem.deviceId}?`)) return;
 
     setActionLoadingId(`block-${deviceItem.id}`);
 
     try {
-      await runTransaction(db, async tx => {
-        const deviceRef = doc(db, 'licenseDevices', deviceItem.id);
-        const deviceSnap = await tx.get(deviceRef);
-
-        if (!deviceSnap.exists()) {
-          throw new Error('Thiết bị không tồn tại.');
-        }
-
-        const currentDevice = deviceSnap.data() as Partial<DeviceRecord>;
-        let nextActiveDeviceCount: number | null = null;
-        let licenseRef: any = null;
-
-        if (currentDevice.status === 'ACTIVE' && currentDevice.licenseDocId) {
-          licenseRef = doc(db, 'licenses', currentDevice.licenseDocId);
-          const licenseSnap = await tx.get(licenseRef);
-
-          if (licenseSnap.exists()) {
-            const licenseData = licenseSnap.data() as Partial<LicenseRecord>;
-            const activeCount = Number(licenseData.activeDeviceCount || 0);
-            nextActiveDeviceCount = Math.max(0, activeCount - 1);
-          }
-        }
-
-        tx.update(deviceRef, {
-          status: 'BLOCKED',
-          blockedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        if (licenseRef && nextActiveDeviceCount !== null) {
-          tx.update(licenseRef, {
-            activeDeviceCount: nextActiveDeviceCount,
-            updatedAt: serverTimestamp(),
-          });
-        }
-      });
-
+      await callAdminMysqlApi<AdminCommandResponse>(
+        `/license-devices/${encodeURIComponent(deviceItem.id)}/block`,
+        { method: 'POST', body: '{}' }
+      );
       await fetchAll();
     } catch (error: any) {
-      console.error('Lỗi khóa thiết bị:', error);
+      console.error('Lỗi khóa thiết bị MySQL:', error);
       alert(error?.message || 'Không thể khóa thiết bị.');
     } finally {
       setActionLoadingId(null);
@@ -742,81 +539,18 @@ export default function LicenseManager() {
       return;
     }
 
-    if (!window.confirm(`Phục hồi thiết bị: ${deviceItem.deviceName || deviceItem.deviceId}?`)) {
-      return;
-    }
+    if (!window.confirm(`Phục hồi thiết bị: ${deviceItem.deviceName || deviceItem.deviceId}?`)) return;
 
     setActionLoadingId(`restore-${deviceItem.id}`);
 
     try {
-      let resolvedLicenseId = deviceItem.licenseDocId;
-
-      if (!resolvedLicenseId && deviceItem.schoolId) {
-        const foundLicense = await findLicenseBySchoolId(deviceItem.schoolId);
-        resolvedLicenseId = foundLicense?.id;
-      }
-
-      if (!resolvedLicenseId) {
-        alert('Không tìm thấy hồ sơ bản quyền của đơn vị để phục hồi thiết bị.');
-        return;
-      }
-
-      const deviceRef = doc(db, 'licenseDevices', deviceItem.id);
-      const licenseRef = doc(db, 'licenses', resolvedLicenseId);
-
-      await runTransaction(db, async tx => {
-        const deviceSnap = await tx.get(deviceRef);
-        const licenseSnap = await tx.get(licenseRef);
-
-        if (!deviceSnap.exists()) {
-          throw new Error('Thiết bị không tồn tại.');
-        }
-
-        if (!licenseSnap.exists()) {
-          throw new Error('Hồ sơ bản quyền của đơn vị không tồn tại.');
-        }
-
-        const currentDevice = deviceSnap.data() as Partial<DeviceRecord>;
-        const licenseData = licenseSnap.data() as Partial<LicenseRecord>;
-
-        if (currentDevice.status === 'ACTIVE') {
-          throw new Error('Thiết bị này đã được phục hồi trước đó.');
-        }
-
-        if (currentDevice.status !== 'REVOKED' && currentDevice.status !== 'BLOCKED') {
-          throw new Error('Chỉ có thể phục hồi thiết bị REVOKED hoặc BLOCKED.');
-        }
-
-        if (licenseData.status !== 'ACTIVE') {
-          throw new Error('Bản quyền của đơn vị đang bị khóa hoặc chưa hoạt động.');
-        }
-
-        const activeDeviceCount = Number(licenseData.activeDeviceCount || 0);
-        const maxDevices = Number(licenseData.maxDevices || 15);
-
-        if (activeDeviceCount >= maxDevices) {
-          throw new Error(
-            `Đơn vị đã đạt giới hạn ${activeDeviceCount}/${maxDevices} thiết bị. Vui lòng thu hồi thiết bị khác trước khi phục hồi.`
-          );
-        }
-
-        tx.update(deviceRef, {
-          status: 'ACTIVE',
-          licenseDocId: resolvedLicenseId,
-          restoredAt: serverTimestamp(),
-          lastSeenAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        tx.update(licenseRef, {
-          activeDeviceCount: activeDeviceCount + 1,
-          updatedAt: serverTimestamp(),
-        });
-      });
-
+      await callAdminMysqlApi<AdminCommandResponse>(
+        `/license-devices/${encodeURIComponent(deviceItem.id)}/restore`,
+        { method: 'POST', body: '{}' }
+      );
       await fetchAll();
     } catch (error: any) {
-      console.error('Lỗi phục hồi thiết bị:', error);
+      console.error('Lỗi phục hồi thiết bị MySQL:', error);
       alert(error?.message || 'Không thể phục hồi thiết bị.');
     } finally {
       setActionLoadingId(null);
@@ -829,40 +563,20 @@ export default function LicenseManager() {
       return;
     }
 
-    if (
-      !window.confirm(
-        `Xóa vĩnh viễn thiết bị khỏi danh sách?\n\nThiết bị: ${
-          deviceItem.deviceName || deviceItem.deviceId
-        }\nTrạng thái: ${deviceItem.status || 'UNKNOWN'}`
-      )
-    ) {
-      return;
-    }
+    if (!window.confirm(
+      `Xóa vĩnh viễn thiết bị khỏi danh sách?\n\nThiết bị: ${deviceItem.deviceName || deviceItem.deviceId}\nTrạng thái: ${deviceItem.status || 'UNKNOWN'}`
+    )) return;
 
     setActionLoadingId(`delete-${deviceItem.id}`);
 
     try {
-      const deviceRef = doc(db, 'licenseDevices', deviceItem.id);
-
-      await runTransaction(db, async tx => {
-        const deviceSnap = await tx.get(deviceRef);
-
-        if (!deviceSnap.exists()) {
-          throw new Error('Thiết bị không tồn tại hoặc đã bị xóa.');
-        }
-
-        const currentDevice = deviceSnap.data() as Partial<DeviceRecord>;
-
-        if (currentDevice.status === 'ACTIVE') {
-          throw new Error('Không thể xóa thiết bị ACTIVE. Vui lòng Thu hồi hoặc Khóa thiết bị trước.');
-        }
-
-        tx.delete(deviceRef);
-      });
-
+      await callAdminMysqlApi<AdminCommandResponse>(
+        `/license-devices/${encodeURIComponent(deviceItem.id)}`,
+        { method: 'DELETE' }
+      );
       await fetchAll();
     } catch (error: any) {
-      console.error('Lỗi xóa thiết bị:', error);
+      console.error('Lỗi xóa thiết bị MySQL:', error);
       alert(error?.message || 'Không thể xóa thiết bị.');
     } finally {
       setActionLoadingId(null);
@@ -877,26 +591,23 @@ export default function LicenseManager() {
       return sameLicense && d.status === 'ACTIVE';
     }).length;
 
-    if (
-      !window.confirm(
-        `Đồng bộ số thiết bị ACTIVE của ${lic.orgName || lic.schoolId} thành ${
-          activeCount
-        }/${lic.maxDevices || 15}?`
-      )
-    ) {
-      return;
-    }
+    if (!window.confirm(
+      `Đồng bộ số thiết bị ACTIVE của ${lic.orgName || lic.schoolId} thành ${activeCount}/${lic.maxDevices || 15}?`
+    )) return;
+
+    setActionLoadingId(`sync-${lic.id}`);
 
     try {
-      await updateDoc(doc(db, 'licenses', lic.id), {
-        activeDeviceCount: activeCount,
-        updatedAt: serverTimestamp(),
-      });
-
+      await callAdminMysqlApi<AdminCommandResponse>(
+        `/licenses/${encodeURIComponent(lic.id)}/sync-device-count`,
+        { method: 'POST', body: '{}' }
+      );
       await fetchAll();
-    } catch (error) {
-      console.error('Lỗi đồng bộ số thiết bị:', error);
-      alert('Không thể đồng bộ số thiết bị.');
+    } catch (error: any) {
+      console.error('Lỗi đồng bộ số thiết bị MySQL:', error);
+      alert(error?.message || 'Không thể đồng bộ số thiết bị.');
+    } finally {
+      setActionLoadingId(null);
     }
   };
 
@@ -1257,6 +968,7 @@ export default function LicenseManager() {
                 <th className="p-4 font-bold">School ID</th>
                 <th className="p-4 font-bold">Thiết bị</th>
                 <th className="p-4 font-bold">Trạng thái</th>
+                <th className="p-4 font-bold">Thời hạn bản quyền</th>
                 <th className="p-4 font-bold text-center">Hành động</th>
               </tr>
             </thead>
@@ -1264,13 +976,14 @@ export default function LicenseManager() {
             <tbody className="text-sm">
               {filteredLicenses.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="p-8 text-center text-slate-500 font-medium">
+                  <td colSpan={6} className="p-8 text-center text-slate-500 font-medium">
                     Không tìm thấy đơn vị phù hợp.
                   </td>
                 </tr>
               ) : (
                 filteredLicenses.map(lic => {
                   const usage = getDeviceUsage(lic);
+                  const remainingDays = getLicenseRemainingDays(lic.expiresAt);
                   const isDeletingSchool = actionLoadingId === `delete-school-${lic.id}`;
 
                   return (
@@ -1320,11 +1033,34 @@ export default function LicenseManager() {
                           ></div>
                         </div>
                       </td>
-
+                      
                       <td className="p-4">
                         <StatusBadge status={lic.status} />
                       </td>
+                      <td className="p-4 min-w-[180px]">
+                      <div className="space-y-1">
+                      <p className="text-xs font-bold text-slate-500">Hết hạn:</p>
+                      <p className="text-sm font-black text-slate-800">
+                      {formatDateOnly(lic.expiresAt)}
+                      </p>
 
+                      {remainingDays === null ? (
+                      <p className="text-xs font-bold text-slate-400">Chưa có dữ liệu</p>
+                      ) : remainingDays < 0 ? (
+                      <p className="text-xs font-black text-rose-600">
+                      Đã hết hạn {Math.abs(remainingDays)} ngày
+                      </p>
+                      ) : remainingDays <= 30 ? (
+                      <p className="text-xs font-black text-amber-600">
+                      Còn {remainingDays} ngày
+                      </p>
+                      ) : (
+                      <p className="text-xs font-black text-emerald-600">
+                      Còn {remainingDays} ngày
+                      </p>
+                      )}
+                      </div>
+                      </td>     
                       <td className="p-4">
                         <div className="flex flex-col sm:flex-row justify-center gap-2">
                           <button
@@ -1498,7 +1234,7 @@ export default function LicenseManager() {
           <div className="p-4 bg-slate-50 border-t border-slate-100 text-xs text-slate-500">
             <Activity className="w-3.5 h-3.5 inline mr-1" />
             Đã xử lý {processedRequests.length} yêu cầu. Các yêu cầu đã duyệt/từ chối vẫn được lưu trong
-            collection <span className="font-mono font-bold">licenseRequests</span> để truy vết.
+            <span className="font-mono font-bold">license_requests</span> trong MySQL để truy vết.
           </div>
         )}
       </div>

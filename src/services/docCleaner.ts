@@ -92,25 +92,10 @@ const isDocumentTitleLine = (text: string): boolean => {
     if (DOC_TYPE_KEYWORDS.some(k => upper.startsWith(k))) return true;
 
     const titleKeywords = [
-        "KE HOACH",
-        "QUYET DINH",
-        "TO TRINH",
-        "CONG VAN",
-        "THONG BAO",
-        "BAO CAO",
-        "BIEN BAN",
-        "NGHI QUYET",
-        "CHUONG TRINH",
-        "PHUONG AN",
-        "DE AN",
-        "HUONG DAN",
-        "QUY CHE",
-        "QUY DINH",
-        "DANH SACH",
-        "LICH CONG TAC",
-        "PHIEU",
-        "DON",
-        "NOI QUY"
+        "KE HOACH", "QUYET DINH", "TO TRINH", "CONG VAN", "THONG BAO",
+        "BAO CAO", "BIEN BAN", "NGHI QUYET", "CHUONG TRINH", "PHUONG AN",
+        "DE AN", "HUONG DAN", "QUY CHE", "QUY DINH", "DANH SACH",
+        "LICH CONG TAC", "PHIEU", "DON", "NOI QUY"
     ];
 
     return titleKeywords.some(k => noAccent.startsWith(k));
@@ -130,27 +115,15 @@ const isPartyHeaderText = (text: string): boolean => {
 const isAdministrativeHeaderText = (text: string): boolean => {
     const { noAccent } = normalizeForDetect(text);
 
-    const hasNationalName =
-        noAccent.includes("CONG HOA XA HOI CHU NGHIA VIET NAM");
-
-    const hasMotto =
-        noAccent.includes("DOC LAP") &&
-        noAccent.includes("TU DO") &&
-        noAccent.includes("HANH PHUC");
-
+    const hasNationalName = noAccent.includes("CONG HOA XA HOI CHU NGHIA VIET NAM");
+    const hasMotto = noAccent.includes("DOC LAP") && noAccent.includes("TU DO") && noAccent.includes("HANH PHUC");
     const hasAdministrativeAgency =
-        noAccent.includes("UBND") ||
-        noAccent.includes("UY BAN NHAN DAN") ||
-        noAccent.includes("PHONG GIAO DUC") ||
-        noAccent.includes("SO GIAO DUC") ||
-        noAccent.includes("BO GIAO DUC") ||
-        noAccent.includes("TRUONG ") ||
-        noAccent.includes("THCS") ||
-        noAccent.includes("THPT") ||
-        noAccent.includes("TIEU HOC") ||
-        noAccent.includes("MAM NON") ||
-        noAccent.includes("PTDT") ||
-        noAccent.includes("TRUNG HOC CO SO") ||
+        noAccent.includes("UBND") || noAccent.includes("UY BAN NHAN DAN") ||
+        noAccent.includes("PHONG GIAO DUC") || noAccent.includes("SO GIAO DUC") ||
+        noAccent.includes("BO GIAO DUC") || noAccent.includes("TRUONG ") ||
+        noAccent.includes("THCS") || noAccent.includes("THPT") ||
+        noAccent.includes("TIEU HOC") || noAccent.includes("MAM NON") ||
+        noAccent.includes("PTDT") || noAccent.includes("TRUNG HOC CO SO") ||
         noAccent.includes("TRUNG HOC PHO THONG");
 
     return hasNationalName || hasMotto || hasAdministrativeAgency;
@@ -160,12 +133,9 @@ const isDepartmentHeaderText = (text: string): boolean => {
     const { noAccent } = normalizeForDetect(text);
 
     return (
-        noAccent.includes("TO CHUYEN MON") ||
-        noAccent.includes("TO KHOA HOC") ||
-        noAccent.includes("TO XA HOI") ||
-        noAccent.includes("TO TU NHIEN") ||
-        noAccent.includes("TO VAN PHONG") ||
-        noAccent.includes("SINH HOAT TO") ||
+        noAccent.includes("TO CHUYEN MON") || noAccent.includes("TO KHOA HOC") ||
+        noAccent.includes("TO XA HOI") || noAccent.includes("TO TU NHIEN") ||
+        noAccent.includes("TO VAN PHONG") || noAccent.includes("SINH HOAT TO") ||
         noAccent.includes("HOP TO")
     );
 };
@@ -176,12 +146,9 @@ const isHeaderText = (text: string): boolean => {
     if (upper.length === 0) return true;
 
     return (
-        isPageNumberLine(text) ||
-        isDecorativeLine(text) ||
-        isNumberLine(text) ||
-        isDateLine(text) ||
-        isPartyHeaderText(text) ||
-        isAdministrativeHeaderText(text) ||
+        isPageNumberLine(text) || isDecorativeLine(text) ||
+        isNumberLine(text) || isDateLine(text) ||
+        isPartyHeaderText(text) || isAdministrativeHeaderText(text) ||
         isDepartmentHeaderText(text)
     );
 };
@@ -189,12 +156,10 @@ const isHeaderText = (text: string): boolean => {
 const getTableMaxCols = (tbl: Element): number => {
     const trs = getNodes(tbl, "tr");
     let maxCols = 0;
-
     for (const tr of trs) {
         const cols = getNodes(tr, "tc").length;
         if (cols > maxCols) maxCols = cols;
     }
-
     return maxCols;
 };
 
@@ -206,32 +171,19 @@ const isLikelyHeaderTable = (tbl: Element): boolean => {
     const maxCols = getTableMaxCols(tbl);
 
     const hasHeaderKeyword =
-        isPartyHeaderText(text) ||
-        isAdministrativeHeaderText(text) ||
+        isPartyHeaderText(text) || isAdministrativeHeaderText(text) ||
         isDepartmentHeaderText(text) ||
         noAccent.includes("CONG HOA XA HOI CHU NGHIA VIET NAM") ||
-        (
-            noAccent.includes("DOC LAP") &&
-            noAccent.includes("TU DO") &&
-            noAccent.includes("HANH PHUC")
-        );
+        (noAccent.includes("DOC LAP") && noAccent.includes("TU DO") && noAccent.includes("HANH PHUC"));
 
     if (hasHeaderKeyword) return true;
 
-    /**
-     * Header thường là bảng 1-2 cột, ít dòng, nằm ở đầu văn bản.
-     * Không xoá bảng nội dung dài.
-     */
     if (maxCols <= 2 && trs.length <= 10 && text.length < 500) {
         const looksLikeHeader =
-            noAccent.includes("UBND") ||
-            noAccent.includes("UY BAN NHAN DAN") ||
-            noAccent.includes("TRUONG") ||
-            noAccent.includes("DANG BO") ||
-            noAccent.includes("CHI BO") ||
-            noAccent.includes("TO CHUYEN MON") ||
-            noAccent.includes("SO:") ||
-            noAccent.includes("SO ");
+            noAccent.includes("UBND") || noAccent.includes("UY BAN NHAN DAN") ||
+            noAccent.includes("TRUONG") || noAccent.includes("DANG BO") ||
+            noAccent.includes("CHI BO") || noAccent.includes("TO CHUYEN MON") ||
+            noAccent.includes("SO:") || noAccent.includes("SO ");
 
         return looksLikeHeader;
     }
@@ -246,44 +198,20 @@ const isBodyContentStart = (text: string): boolean => {
 
     if (isDocumentTitleLine(text)) return true;
 
-    /**
-     * Các cụm thường mở đầu phần nội dung chính.
-     * Nếu gặp các dòng này thì dừng dọn header để không xoá nhầm thân văn bản.
-     */
     const bodyStartKeywords = [
-        "CAN CU",
-        "THUC HIEN",
-        "NGAY",
-        "HOM NAY",
-        "I.",
-        "I ",
-        "1.",
-        "1 ",
-        "A.",
-        "A "
+        "CAN CU", "THUC HIEN", "NGAY", "HOM NAY",
+        "I.", "I ", "1.", "1 ", "A.", "A "
     ];
 
     return bodyStartKeywords.some(k => noAccent.startsWith(k)) && noAccent.length > 20;
 };
 
-/**
- * Dọn header cũ trước khi dựng header chuẩn mới.
- *
- * Mục tiêu:
- * - Xoá sạch header cũ của văn bản Đảng, hành chính nhà trường, Tổ chuyên môn.
- * - Xoá cả bảng header và paragraph header.
- * - Dừng ngay khi gặp tiêu đề văn bản: KẾ HOẠCH, NGHỊ QUYẾT, BIÊN BẢN...
- */
 export const cleanHeader = (doc: Document, headerType: HeaderType) => {
     if (headerType === HeaderType.NONE) return;
 
     const body = getBody(doc);
     if (!body) return;
 
-    /**
-     * Cách cũ quét toàn bộ getNodes(doc, "p") dễ sót vì header có thể là direct child dạng bảng.
-     * Cách mới quét các node trực tiếp trong body từ đầu văn bản đến tiêu đề.
-     */
     const children = Array.from(body.childNodes).filter(
         node => node.nodeType === 1
     ) as Element[];
@@ -296,27 +224,14 @@ export const cleanHeader = (doc: Document, headerType: HeaderType) => {
 
         const localName = getLocalName(child);
 
-        /**
-         * Không đụng section properties.
-         */
         if (localName === "sectPr") break;
 
-        /**
-         * Chỉ quét phần đầu văn bản.
-         */
         scannedBlocks++;
         if (scannedBlocks > 60) break;
 
         const text = getElementText(child);
 
-        /**
-         * Gặp tiêu đề văn bản thì dừng.
-         */
         if (isDocumentTitleLine(text)) break;
-
-        /**
-         * Nếu gặp thân văn bản thật sự thì dừng để tránh xoá nhầm.
-         */
         if (isBodyContentStart(text)) break;
 
         if (localName === "tbl") {
@@ -325,10 +240,6 @@ export const cleanHeader = (doc: Document, headerType: HeaderType) => {
                 removedAny = true;
                 continue;
             }
-
-            /**
-             * Nếu là bảng đầu tài liệu nhưng không giống header thì dừng.
-             */
             if (text.length > 0) break;
         }
 
@@ -338,27 +249,14 @@ export const cleanHeader = (doc: Document, headerType: HeaderType) => {
                 removedAny = true;
                 continue;
             }
-
-            /**
-             * Paragraph rất ngắn, nằm giữa cụm header, thường là dòng rác / khoảng trống.
-             */
             if (removedAny && text.length <= 3) {
                 child.parentNode.removeChild(child);
                 continue;
             }
-
-            /**
-             * Nếu paragraph không phải header và có chữ đáng kể thì dừng.
-             */
             if (text.length > 0) break;
         }
     }
 
-    /**
-     * Lượt quét bổ sung:
-     * Một số file Word có header không nằm sát đầu body do có vài paragraph rỗng / số trang.
-     * Quét các paragraph đầu tiên bên ngoài table, dừng khi gặp tiêu đề.
-     */
     const headParagraphs = getNodes(doc, "p");
     for (let i = 0; i < Math.min(45, headParagraphs.length); i++) {
         const p = headParagraphs[i];
@@ -374,10 +272,6 @@ export const cleanHeader = (doc: Document, headerType: HeaderType) => {
         }
     }
 
-    /**
-     * Lượt quét bổ sung cho bảng header còn sót trong 8 bảng đầu.
-     * Dùng để xử lý trường hợp Word đặt header trong bảng nhưng không nằm ở child đầu tiên.
-     */
     const headTables = getNodes(doc, "tbl");
     for (let i = 0; i < Math.min(8, headTables.length); i++) {
         const tbl = headTables[i];
@@ -446,7 +340,6 @@ const isEmptyParagraph = (p: Element): boolean => {
     if (getNodes(p, "drawing").length > 0) return false;
     if (getNodes(p, "pict").length > 0) return false;
     if (getNodes(p, "object").length > 0) return false;
-
     if (getNodes(p, "sectPr").length > 0) return false;
 
     const brs = getNodes(p, "br");
@@ -509,4 +402,40 @@ export const removeConsecutiveEmptyParagraphs = (doc: Document) => {
     }
 
     return toRemove.length;
+};
+
+/**
+ * 🔥 NEW: Xóa MỌI paragraph rỗng trong toàn document (kể cả trong table cell).
+ * Bỏ qua paragraph trong bảng được protect (header/signature/underline).
+ * Dùng sau khi đã chèn header/signature xong.
+ */
+export const removeAllEmptyParagraphsDeep = (
+    doc: Document,
+    protectedTables: Set<Element>
+): number => {
+    const isInProtectedTable = (p: Element): boolean => {
+        let cur: Node | null = p.parentNode;
+        while (cur && cur.nodeType === 1) {
+            const el = cur as Element;
+            if ((el.localName === "tbl" || el.nodeName === "w:tbl") && protectedTables.has(el)) {
+                return true;
+            }
+            cur = cur.parentNode;
+        }
+        return false;
+    };
+
+    const allPs = Array.from(doc.getElementsByTagNameNS(W_NS, "p"));
+    let removed = 0;
+
+    for (const p of allPs) {
+        if (!p.parentNode) continue;
+        if (isInProtectedTable(p)) continue;
+        if (isEmptyParagraph(p)) {
+            p.parentNode.removeChild(p);
+            removed++;
+        }
+    }
+
+    return removed;
 };
