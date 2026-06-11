@@ -153,13 +153,41 @@ export default function MainApp() {
   const isLockedByTrial = accessStatus.mode === 'locked';
 
   useEffect(() => {
+  let cancelled = false;
+
+  const loadTrialStatus = async () => {
     if (isLicensed) {
       setTrialNotice('');
       return;
     }
 
-    setTrialRemaining(getRemainingTrialUses());
-  }, [isLicensed, authStatus]);
+    try {
+      const state = await syncTrialStatusFromMysql();
+
+      if (cancelled) return;
+
+      setTrialRemaining(state.remaining);
+
+      if (state.remaining <= 0) {
+        setTrialNotice('Bạn đã dùng hết 5 lượt dùng thử. Vui lòng đăng ký bản quyền chính thức để tiếp tục sử dụng.');
+      } else {
+        setTrialNotice('');
+      }
+    } catch (error) {
+      console.warn('[TRIAL_SYNC_FAILED]', error);
+
+      if (cancelled) return;
+
+      setTrialRemaining(getRemainingTrialUses());
+    }
+  };
+
+  loadTrialStatus();
+
+  return () => {
+    cancelled = true;
+  };
+}, [isLicensed, authStatus]);
 
   const todayStr = new Date().toISOString().split('T')[0];
   const savedSigs = JSON.parse(localStorage.getItem('docFormat_Signatures') || '{}');

@@ -52,6 +52,14 @@ const defaultTrialState: TrialState = {
 };
 
 const getTrialApiBaseUrl = () => {
+  const isLocalhost =
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1';
+
+  if (isLocalhost) {
+    return 'https://docformatpro.com/VB/api/trial';
+  }
+
   const baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
   return `${baseUrl}/api/trial`;
 };
@@ -138,7 +146,6 @@ export const getTrialDeviceId = async () => {
 
   return `MYSQL_TRIAL_DEVICE_${hash.slice(0, 32).toUpperCase()}`;
 };
-
 const buildTrialPayload = async () => {
   const deviceId = await getTrialDeviceId();
 
