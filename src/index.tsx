@@ -23,7 +23,9 @@ root.render(
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
-      .register('/sw.js')
+      .register(`${import.meta.env.BASE_URL}sw.js`, {
+        scope: import.meta.env.BASE_URL,
+      })
       .then(registration => {
         console.log('DocFormat Pro Service Worker registered:', registration.scope);
       })
