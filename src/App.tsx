@@ -27,7 +27,7 @@ function ProtectedAdminRoute({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <Router>
+    <Router basename="/VB">
       {/* Loa thông báo toàn hệ thống */}
       <NotificationBanner />
 
