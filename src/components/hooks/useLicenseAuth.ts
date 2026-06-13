@@ -1,6 +1,7 @@
 // File: src/components/hooks/useLicenseAuth.ts
 import { useEffect, useState } from 'react';
 import { OrgInfo } from '../../types';
+import { registerTrial } from '../../services/trialService';
 import {
   collection,
   addDoc,
@@ -1005,7 +1006,7 @@ export const useLicenseAuth = () => {
           phone: payload.phone?.trim() || '',
           status: 'PENDING',
         };
-
+        
         const mysqlResult = await postLicenseApi<ClientLicenseRequestResponse>('/request', requestPayload);
 
 const localPending = {
@@ -1047,6 +1048,10 @@ const localPending = {
         alert('Vui lòng nhập Họ tên người sử dụng.');
         return false;
       }
+      if (!payload?.phone?.trim()) {
+  alert('Vui lòng nhập Số điện thoại/Zalo để đăng ký dùng thử hoặc bản quyền.');
+  return false;
+}
 
       if (!payload?.deviceName?.trim()) {
         alert('Vui lòng nhập Tên máy / ghi chú thiết bị.');
@@ -1061,6 +1066,10 @@ const localPending = {
         );
         return false;
       }
+      if (!payload?.phone?.trim()) {
+      alert('Vui lòng nhập Số điện thoại / Zalo để đăng ký dùng thử.');
+      return false;
+}
 
       const requestPayload = {
         requestType: 'NEW_SCHOOL',
@@ -1079,6 +1088,11 @@ const localPending = {
         phone: payload.phone?.trim() || '',
         status: 'PENDING',
       };
+      await registerTrial({
+      phone: requestPayload.phone,
+      contact_name: requestPayload.userName,
+      school_name: requestPayload.orgName,
+});
 
       const docRef = await addDoc(collection(db, 'licenseRequests'), {
         ...requestPayload,

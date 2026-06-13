@@ -154,6 +154,8 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'http://127.0.0.1:3000',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
+  'http://localhost:8787',
+  'http://127.0.0.1:8787',
   'https://doc-format-pro-six.vercel.app',
   'https://docformatpro.com',
   'https://www.docformatpro.com',
@@ -2530,13 +2532,24 @@ function buildTrialResponse(row) {
 
   return {
     id: row.id,
-    deviceId: row.device_id,
-    schoolId: row.school_id,
-    orgName: row.org_name,
+
+    // Dữ liệu cũ từ bảng trial_usage
+    deviceId: row.device_id || row.first_device_id || null,
+    schoolId: row.school_id || null,
+    orgName: row.org_name || null,
+
+    // Dữ liệu mới từ bảng trial_registrations
+    phone: row.phone || null,
+    zalo: row.zalo || null,
+    contactName: row.contact_name || null,
+    schoolName: row.school_name || null,
+    registrationKey: row.registration_key || null,
+
     trialLimit: Number(row.trial_limit || TRIAL_LIMIT),
     trialUsed: Number(row.trial_used || 0),
     trialRemaining: Number(row.trial_remaining || 0),
     status: row.status || 'ACTIVE',
+
     firstUsedAt: row.first_used_at || null,
     lastUsedAt: row.last_used_at || null,
     createdAt: row.created_at || null,
@@ -2606,7 +2619,87 @@ async function ensureTrialUsageRecord(connectionOrPool, req) {
 
   return rows[0] || null;
 }
+async function ensureTrialRegistrationRecord(connectionOrPool, req) {
+  const body = req.body || {};
 
+  const phone = normalizeTrialText(body.phone || body.zalo || body.contactPhone || body.contact_phone, 50);
+  const zalo = normalizeTrialText(body.zalo || body.phone || '', 50);
+  const contactName = normalizeTrialText(body.contactName || body.contact_name, 255);
+  const schoolName = normalizeTrialText(body.schoolName || body.school_name, 255);
+  const registrationKey = normalizeTrialText(body.registrationKey || body.registration_key || phone, 191);
+
+  const deviceId = normalizeTrialDeviceId(body.deviceId || body.device_id);
+  const browserFingerprint = normalizeTrialText(
+    body.browserFingerprint || body.browser_fingerprint,
+    255
+  );
+  const userAgent = normalizeTrialText(req.headers['user-agent'], 4000);
+  const ipAddress = getRequestIp(req);
+
+  if (!phone) {
+    const error = new Error('Vui lòng nhập số điện thoại/Zalo để đăng ký dùng thử.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  await connectionOrPool.execute(
+    `
+      INSERT INTO trial_registrations (
+        phone,
+        zalo,
+        contact_name,
+        school_name,
+        registration_key,
+        trial_limit,
+        trial_used,
+        trial_remaining,
+        status,
+        first_device_id,
+        first_browser_fingerprint,
+        first_ip_address,
+        first_user_agent,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'ACTIVE', ?, ?, ?, ?, NOW(3), NOW(3))
+      ON DUPLICATE KEY UPDATE
+        zalo = COALESCE(VALUES(zalo), zalo),
+        contact_name = COALESCE(VALUES(contact_name), contact_name),
+        school_name = COALESCE(VALUES(school_name), school_name),
+        registration_key = COALESCE(VALUES(registration_key), registration_key),
+        first_device_id = COALESCE(first_device_id, VALUES(first_device_id)),
+        first_browser_fingerprint = COALESCE(first_browser_fingerprint, VALUES(first_browser_fingerprint)),
+        first_ip_address = COALESCE(first_ip_address, VALUES(first_ip_address)),
+        first_user_agent = COALESCE(first_user_agent, VALUES(first_user_agent)),
+        updated_at = NOW(3)
+    `,
+    [
+      phone,
+      zalo,
+      contactName,
+      schoolName,
+      registrationKey,
+      TRIAL_LIMIT,
+      TRIAL_LIMIT,
+      deviceId,
+      browserFingerprint,
+      ipAddress,
+      userAgent,
+    ]
+  );
+
+  const [rows] = await connectionOrPool.execute(
+    `
+      SELECT *
+      FROM trial_registrations
+      WHERE phone = ?
+      LIMIT 1
+    `,
+    [phone]
+  );
+
+  return rows[0] || null;
+}
 app.post(
   ['/api/trial/status', '/VB/api/trial/status'],
   async (req, res) => {
@@ -2643,19 +2736,19 @@ app.post(
     try {
       await connection.beginTransaction();
 
-      const row = await ensureTrialUsageRecord(connection, req);
-      const deviceId = row.device_id;
+      const row = await ensureTrialRegistrationRecord(connection, req);
+      const phone = row.phone;
 
       const [lockedRows] = await connection.execute(
-        `
-          SELECT *
-          FROM trial_usage
-          WHERE device_id = ?
-          LIMIT 1
-          FOR UPDATE
-        `,
-        [deviceId]
-      );
+  `
+    SELECT *
+    FROM trial_registrations
+    WHERE phone = ?
+    LIMIT 1
+    FOR UPDATE
+  `,
+  [phone]
+);
 
       const current = lockedRows[0];
 
@@ -2690,29 +2783,29 @@ app.post(
       const nextStatus = nextRemaining <= 0 ? 'EXHAUSTED' : 'ACTIVE';
 
       await connection.execute(
-        `
-          UPDATE trial_usage
-          SET
-            trial_used = ?,
-            trial_remaining = ?,
-            status = ?,
-            first_used_at = COALESCE(first_used_at, NOW(3)),
-            last_used_at = NOW(3),
-            updated_at = NOW(3)
-          WHERE device_id = ?
-        `,
-        [nextUsed, nextRemaining, nextStatus, deviceId]
-      );
+  `
+    UPDATE trial_registrations
+    SET
+      trial_used = ?,
+      trial_remaining = ?,
+      status = ?,
+      first_used_at = COALESCE(first_used_at, NOW(3)),
+      last_used_at = NOW(3),
+      updated_at = NOW(3)
+    WHERE phone = ?
+  `,
+  [nextUsed, nextRemaining, nextStatus, phone]
+);
 
       const [updatedRows] = await connection.execute(
-        `
-          SELECT *
-          FROM trial_usage
-          WHERE device_id = ?
-          LIMIT 1
-        `,
-        [deviceId]
-      );
+  `
+    SELECT *
+    FROM trial_registrations
+    WHERE phone = ?
+    LIMIT 1
+  `,
+  [phone]
+);
 
       await connection.commit();
 
@@ -2791,26 +2884,21 @@ app.get(['/', '/VB', '/VB/'], sendFrontendIndex);
  * Hỗ trợ các đường dẫn giao diện React.
  * Không áp dụng cho API hoặc request không phải GET.
  */
+// ============================================================
+// Middleware support React frontend (GET only)
+// Trả index.html cho các route React như /VB/admin, /VB/admin-login.
+// Không áp dụng cho API hoặc file tĩnh.
 app.use((req, res, next) => {
   if (req.method !== 'GET') {
     next();
     return;
   }
 
-  const apiPaths = [
-    '/health',
-    '/api/health',
-    '/api/version',
-    '/convert-to-pdf',
-    '/api/convert-docx-to-pdf',
-    '/VB/health',
-    '/VB/api/health',
-    '/VB/api/version',
-    '/VB/convert-to-pdf',
-    '/VB/api/convert-docx-to-pdf',
-  ];
-
-  if (apiPaths.includes(req.path) || req.path.startsWith('/api/')) {
+  if (
+    req.path.startsWith('/api/') ||
+    req.path.startsWith('/VB/api/') ||
+    req.path.includes('.')
+  ) {
     next();
     return;
   }
@@ -2818,13 +2906,113 @@ app.use((req, res, next) => {
   sendFrontendIndex(req, res);
 });
 
-// ============================================================
-// ERROR HANDLER
-// ============================================================
+// --- Route POST trial_registrations ---
+app.post('/VB/api/trial_registrations', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    console.log('Received trial registration payload:', payload);
 
+    const phone = String(payload.phone || '').trim();
+    const zalo = String(payload.zalo || '').trim();
+    const contactName = String(payload.contact_name || '').trim();
+    const schoolName = String(payload.school_name || '').trim();
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Vui lòng nhập Số điện thoại / Zalo.',
+      });
+    }
+
+    const registrationKey = phone;
+    const trialLimit = 5;
+    const trialUsed = 0;
+    const trialRemaining = 5;
+    const status = 'ACTIVE';
+
+    const pool = require('./db.cjs').promise();
+
+    const [result] = await pool.execute(
+      `
+        INSERT INTO trial_registrations
+          (
+            phone,
+            zalo,
+            contact_name,
+            school_name,
+            registration_key,
+            trial_limit,
+            trial_used,
+            trial_remaining,
+            status,
+            created_at,
+            updated_at
+          )
+        VALUES
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+      `,
+      [
+        phone,
+        zalo,
+        contactName,
+        schoolName,
+        registrationKey,
+        trialLimit,
+        trialUsed,
+        trialRemaining,
+        status,
+      ]
+    );
+
+    return res.json({
+      ok: true,
+      message: 'Đăng ký dùng thử / bản quyền thành công.',
+      id: result.insertId,
+      trial: {
+        phone,
+        contact_name: contactName,
+        school_name: schoolName,
+        registration_key: registrationKey,
+        trial_limit: trialLimit,
+        trial_used: trialUsed,
+        trial_remaining: trialRemaining,
+        status,
+      },
+    });
+  } catch (error) {
+    console.error('[trial_registrations insert failed]', error);
+
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Không lưu được đăng ký dùng thử.',
+    });
+  }
+});
+
+// Khai báo apiPaths (không chặn route trial_registrations)
+const apiPaths = [
+  '/convert-to-pdf',
+  '/api/convert-docx-to-pdf',
+  '/VB/health',
+  '/VB/api/health',
+  '/VB/api/version',
+  '/VB/convert-to-pdf',
+  '/VB/api/convert-docx-to-pdf',
+  '/VB/api/trial_registrations',
+];
+
+// Middleware check apiPaths
+app.use((req, res, next) => {
+  if (apiPaths.includes(req.path) || req.path.startsWith('/api/')) {
+    next();
+    return;
+  }
+  sendFrontendIndex(req, res);
+});
+
+// ERROR HANDLER
 app.use((error, _req, res, _next) => {
   console.error('Server error:', error);
-
   if (!res.headersSent) {
     res.status(500).json({
       ok: false,
@@ -2836,7 +3024,6 @@ app.use((error, _req, res, _next) => {
 // ============================================================
 // START SERVER
 // ============================================================
-
 app.listen(PORT, '0.0.0.0', () => {
   const libreOfficePath = findLibreOfficeExecutable();
 
@@ -2850,6 +3037,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(' Endpoints:');
   console.log(' - GET  /health');
   console.log(' - POST /convert-to-pdf');
+  console.log(' - POST /VB/api/trial_registrations');
   console.log('============================================================');
   console.log('');
 });

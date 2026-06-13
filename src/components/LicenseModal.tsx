@@ -307,6 +307,10 @@ export const LicenseModal = ({
       setLocalError('Vui lòng nhập Họ tên người đại diện hoặc người sử dụng.');
       return;
     }
+    if (!phone.trim()) {
+  setLocalError('Vui lòng nhập Số điện thoại/Zalo để đăng ký dùng thử hoặc bản quyền.');
+  return;
+}
 
     if (!deviceName.trim()) {
       setLocalError('Vui lòng nhập Tên máy / ghi chú thiết bị.');
@@ -667,13 +671,13 @@ export const LicenseModal = ({
                   </div>
 
                   <div>
-                    <FieldLabel>Số điện thoại</FieldLabel>
+                    <FieldLabel required>Số điện thoại / Zalo</FieldLabel>
                     <div className="relative">
                       <Phone className="absolute left-3 top-3.5 w-4 h-4 text-slate-400" />
                       <TextInput
                         value={phone}
                         onChange={setPhone}
-                        placeholder="Không bắt buộc"
+                        placeholder="VD: 0912 345 678 hoặc Zalo"
                         className="pl-10"
                       />
                     </div>
@@ -834,11 +838,11 @@ export const LicenseModal = ({
                       </div>
 
                       <div>
-                        <FieldLabel>Số điện thoại</FieldLabel>
+                        <FieldLabel required>Số điện thoại / Zalo</FieldLabel>
                         <TextInput
                           value={phone}
                           onChange={setPhone}
-                          placeholder="Không bắt buộc"
+                          placeholder="VD: 0912 345 678 hoặc Zalo"
                         />
                       </div>
                     </div>

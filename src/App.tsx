@@ -39,14 +39,23 @@ export default function App() {
         <Route path="/admin-login" element={<AdminLogin />} />
         
         {/* 3. Pháo đài Admin: Bảo vệ nghiêm ngặt Dashboard và các công cụ AI */}
-        <Route 
-          path="/admin/*" 
-          element={
-            <ProtectedAdminRoute>
-              <AdminDashboard />
-            </ProtectedAdminRoute>
-          } 
-        />
+<Route
+  path="/admin"
+  element={
+    <ProtectedAdminRoute>
+      <AdminDashboard />
+    </ProtectedAdminRoute>
+  }
+/>
+
+<Route
+  path="/admin/*"
+  element={
+    <ProtectedAdminRoute>
+      <AdminDashboard />
+    </ProtectedAdminRoute>
+  }
+/>
 
         {/* 4. MỚI: Trang hướng dẫn tải PDF Helper - không cần xác thực */}
         <Route path="/download-helper" element={<DownloadHelperPage />} />

@@ -566,7 +566,7 @@ export default function MainApp() {
                   : 'bg-gradient-to-r from-slate-800 to-slate-900 shadow-slate-900/20'
               }`}
             >
-              {authStatus === 'PENDING' ? 'Kiểm tra trạng thái cấp phép' : 'Tiến hành Đăng ký'}
+              {authStatus === 'PENDING' ? 'Kiểm tra trạng thái cấp phép' : 'Đăng ký dùng thử / bản quyền'}
             </button>
           </div>
         )}
@@ -609,7 +609,7 @@ export default function MainApp() {
               onClick={() => setShowOrgSettings(true)}
               className="px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-full text-sm font-bold shadow-lg shadow-amber-500/20 transition-all hover:scale-105"
             >
-              Đăng ký bản quyền
+              Đăng ký dùng thử / bản quyền
             </button>
           </div>
         )}

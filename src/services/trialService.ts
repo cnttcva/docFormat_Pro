@@ -1,4 +1,39 @@
+import axios from 'axios';
+
+// Function đăng ký trial
+export async function registerTrial(payload: {
+  phone: string;
+  zalo?: string;
+  contact_name?: string;
+  school_name?: string;
+}) {
+  try {
+    console.log('registerTrial payload:', payload);
+    const response = await axios.post('/VB/api/trial_registrations', payload);
+    return response.data;
+  } catch (error: any) {
+    console.error('Lỗi khi gọi /VB/api/trial_registrations:', error.message);
+    throw error;
+  }
+}
+
 const TRIAL_CACHE_KEY = 'docformat_pro_trial_state_mysql_v1';
+
+const PENDING_AUTH_STORAGE_KEY = 'docFormat_PendingAuth';
+
+const readPendingTrialPhone = (): string | null => {
+  try {
+    const raw = localStorage.getItem(PENDING_AUTH_STORAGE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    const phone = String(parsed?.phone || '').trim();
+
+    return phone || null;
+  } catch {
+    return null;
+  }
+};
 
 export const TRIAL_LIMIT = 5;
 
@@ -148,10 +183,13 @@ export const getTrialDeviceId = async () => {
 };
 const buildTrialPayload = async () => {
   const deviceId = await getTrialDeviceId();
+  const phone = readPendingTrialPhone();
 
   return {
     deviceId,
     browserFingerprint: deviceId,
+    phone,
+    zalo: phone,
   };
 };
 
