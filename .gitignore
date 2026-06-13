@@ -14,3 +14,5 @@ build/
 *.mysql-stage.*
 *.backup-before-*
 src/services/src/
+db.cjs
+db.js
