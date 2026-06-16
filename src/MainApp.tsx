@@ -21,6 +21,7 @@ import { getAccessStatus } from './services/accessService';
 import {
   consumeTrialUse,
   getRemainingTrialUses,
+  saveTrialState,
   syncTrialStatusFromMysql,
   TRIAL_LIMIT,
 } from './services/trialService';
@@ -327,7 +328,17 @@ export default function MainApp() {
     if (res.success && latestAccess.mode === 'trial') {
       const trialResult = await consumeTrialUse();
 
-      setTrialRemaining(trialResult.remaining);
+const nextRemaining = Math.max(0, trialResult.remaining);
+const nextTrialState: typeof trialResult.state = {
+  ...trialResult.state,
+  used: TRIAL_LIMIT - nextRemaining,
+  remaining: nextRemaining,
+  status: nextRemaining > 0 ? 'ACTIVE' : 'EXHAUSTED',
+  lastUsedAt: new Date().toISOString(),
+};
+
+saveTrialState(nextTrialState);
+setTrialRemaining(nextRemaining);
 
       if (!trialResult.ok || trialResult.remaining <= 0) {
         setTrialNotice(
@@ -543,20 +554,21 @@ export default function MainApp() {
             </div>
 
             <h3 className="text-lg font-bold text-slate-800">
-              {authStatus === 'PENDING'
-                ? 'Hệ Thống Đang Chờ Kích Hoạt'
-                : isLockedByTrial
-                  ? 'Đã Hết Lượt Dùng Thử'
-                  : 'Hệ Thống Đang Bị Khóa'}
-            </h3>
+  {authStatus === 'PENDING'
+    ? 'Hệ Thống Đang Chờ Kích Hoạt'
+    : accessStatus.message?.includes('đăng ký dùng thử')
+      ? 'Bạn Hãy Đăng Ký Dùng Thử / Bản Quyền'
+      : isLockedByTrial
+        ? 'Đã Hết Lượt Dùng Thử'
+        : 'Hệ Thống Đang Bị Khóa'}
+</h3>
 
-            <p className="text-slate-500 mt-2 mb-6 max-w-md">
-              {authStatus === 'PENDING'
-                ? 'Yêu cầu bản quyền của thiết bị này đang chờ Admin duyệt. Sau khi được duyệt, bấm kiểm tra trạng thái trong hộp thoại bản quyền.'
-                : isLockedByTrial
-                  ? `Bạn đã dùng hết ${TRIAL_LIMIT} lượt dùng thử. Vui lòng đăng ký bản quyền chính thức để tiếp tục sử dụng docFormat Pro.`
-                  : 'Vui lòng đăng ký bản quyền sử dụng để mở khóa toàn bộ sức mạnh của AI Document Engine.'}
-            </p>
+<p className="text-slate-500 mt-2 mb-6 max-w-md">
+  {authStatus === 'PENDING'
+    ? 'Yêu cầu bản quyền của thiết bị này đang chờ Admin duyệt. Sau khi được duyệt, bấm kiểm tra trạng thái trong hộp thoại bản quyền.'
+    : accessStatus.message ||
+      'Vui lòng đăng ký bản quyền sử dụng để mở khóa toàn bộ sức mạnh của AI Document Engine.'}
+</p>
 
             <button
               onClick={() => setShowOrgSettings(true)}

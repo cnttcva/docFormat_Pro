@@ -1,5 +1,6 @@
 import {
   getRemainingTrialUses,
+  getTrialState,
   isTrialAvailable,
 } from './trialService';
 
@@ -21,11 +22,33 @@ export const getAccessStatus = (isLicensed: boolean): AccessStatus => {
     };
   }
 
-  if (isTrialAvailable()) {
+  const trialState = getTrialState();
+
+  if (trialState.status === 'ACTIVE' && isTrialAvailable()) {
     return {
       canUse: true,
       mode: 'trial',
       trialRemaining: getRemainingTrialUses(),
+    };
+  }
+
+  if (trialState.status === 'UNREGISTERED') {
+    return {
+      canUse: false,
+      mode: 'locked',
+      trialRemaining: 0,
+      message:
+        'Bạn hãy đăng ký dùng thử / bản quyền. Sau khi đăng ký thông tin lần đầu, bạn sẽ được cấp 5 lượt chuẩn hóa tài liệu miễn phí.',
+    };
+  }
+
+  if (trialState.status === 'BLOCKED') {
+    return {
+      canUse: false,
+      mode: 'locked',
+      trialRemaining: 0,
+      message:
+        'Tài khoản hoặc thiết bị dùng thử này đã bị khóa. Vui lòng liên hệ quản trị viên để được hỗ trợ.',
     };
   }
 

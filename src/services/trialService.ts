@@ -37,7 +37,7 @@ const readPendingTrialPhone = (): string | null => {
 
 export const TRIAL_LIMIT = 5;
 
-export type TrialStatus = 'ACTIVE' | 'EXHAUSTED' | 'BLOCKED';
+export type TrialStatus = 'UNREGISTERED' | 'ACTIVE' | 'EXHAUSTED' | 'BLOCKED';
 
 export type TrialState = {
   used: number;
@@ -80,8 +80,8 @@ type TrialApiResponse = {
 const defaultTrialState: TrialState = {
   used: 0,
   limit: TRIAL_LIMIT,
-  remaining: TRIAL_LIMIT,
-  status: 'ACTIVE',
+  remaining: 0,
+  status: 'UNREGISTERED',
   firstUsedAt: null,
   lastUsedAt: null,
 };
@@ -119,7 +119,7 @@ const readTrialCache = (): TrialState => {
       used,
       limit,
       remaining: Math.max(0, remaining),
-      status: parsed.status || 'ACTIVE',
+      status: parsed.status || 'UNREGISTERED',
       firstUsedAt: parsed.firstUsedAt || null,
       lastUsedAt: parsed.lastUsedAt || null,
     };
@@ -129,6 +129,36 @@ const readTrialCache = (): TrialState => {
 };
 
 const saveTrialCache = (state: TrialState) => {
+  try {
+    const raw = localStorage.getItem(TRIAL_CACHE_KEY);
+
+    if (raw) {
+      const current = JSON.parse(raw) as Partial<TrialState>;
+      const currentRemaining = clampNumber(current.remaining, TRIAL_LIMIT);
+      const nextRemaining = clampNumber(state.remaining, TRIAL_LIMIT);
+
+      const isCurrentTrial =
+        current.status === 'ACTIVE' || current.status === 'EXHAUSTED';
+
+      if (isCurrentTrial && nextRemaining > currentRemaining) {
+        const safeState: TrialState = {
+          ...state,
+          used: Math.max(0, TRIAL_LIMIT - currentRemaining),
+          remaining: currentRemaining,
+          status: currentRemaining > 0 ? 'ACTIVE' : 'EXHAUSTED',
+          firstUsedAt: current.firstUsedAt || state.firstUsedAt || null,
+          lastUsedAt: current.lastUsedAt || state.lastUsedAt || null,
+        };
+
+        localStorage.setItem(TRIAL_CACHE_KEY, JSON.stringify(safeState));
+        return;
+      }
+    }
+  } catch {
+    // Nếu cache lỗi định dạng thì ghi lại state mới.
+  }
+
+  
   localStorage.setItem(TRIAL_CACHE_KEY, JSON.stringify(state));
 };
 
@@ -143,7 +173,7 @@ const buildStateFromApiRecord = (trial?: TrialApiRecord): TrialState => {
     used,
     limit,
     remaining: Math.max(0, remaining),
-    status: trial.status || 'ACTIVE',
+    status: trial.status || 'UNREGISTERED',
     firstUsedAt: trial.firstUsedAt || null,
     lastUsedAt: trial.lastUsedAt || null,
   };
@@ -219,6 +249,13 @@ const callTrialApi = async (path: 'status' | 'consume'): Promise<TrialApiRespons
 };
 
 export const syncTrialStatusFromMysql = async (): Promise<TrialState> => {
+  const cachedState = readTrialCache();
+  const pendingPhone = readPendingTrialPhone();
+
+  if (!pendingPhone && cachedState.status === 'UNREGISTERED') {
+    return defaultTrialState;
+  }
+
   const result = await callTrialApi('status');
 
   if (!result.ok) {
@@ -231,9 +268,9 @@ export const syncTrialStatusFromMysql = async (): Promise<TrialState> => {
   }
 
   const state = buildStateFromApiRecord(result.trial);
-  saveTrialCache(state);
+saveTrialCache(state);
 
-  return state;
+return readTrialCache();
 };
 
 export const getTrialState = (): TrialState => {

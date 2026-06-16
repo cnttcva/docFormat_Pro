@@ -1,7 +1,6 @@
 // File: src/components/hooks/useLicenseAuth.ts
 import { useEffect, useState } from 'react';
 import { OrgInfo } from '../../types';
-import { registerTrial } from '../../services/trialService';
 import {
   collection,
   addDoc,
@@ -665,6 +664,24 @@ export const useLicenseAuth = () => {
 
     return false;
   }
+        if (mysqlErrorData?.status === 'UNREGISTERED') {
+        clearLocalLicense();
+        localStorage.removeItem(ORG_STORAGE_KEY);
+        localStorage.removeItem(PENDING_STORAGE_KEY);
+
+        setOrgInfo(undefined);
+        setPendingAuth(null);
+        setAuthStatus('UNREGISTERED');
+
+        setLicenseNotice({
+          type: 'INFO',
+          status: 'UNREGISTERED',
+          message:
+            'Thiết bị này chưa được đăng ký bản quyền. Vui lòng chọn đăng ký dùng thử / bản quyền để gửi thông tin đăng ký.',
+        });
+
+        return false;
+      }
 
   console.warn('Không kiểm tra được license MySQL, chuyển sang kiểm tra Firebase cũ:', mysqlError);
 }
@@ -972,40 +989,18 @@ export const useLicenseAuth = () => {
           return false;
         }
 
-        const license = await findLicenseBySchoolId(schoolId);
-
-        if (!license) {
-          alert('Không tìm thấy trường có Mã định danh này trong hệ thống.');
-          return false;
-        }
-
-        if (license.data.status !== 'ACTIVE') {
-          alert('Bản quyền của đơn vị này chưa hoạt động hoặc đã bị khóa.');
-          return false;
-        }
-
-        const maxDevices = Number(license.data.maxDevices || 15);
-        const activeDeviceCount = Number(license.data.activeDeviceCount || 0);
-
-        if (activeDeviceCount >= maxDevices) {
-          alert(
-            `Đơn vị ${schoolId} đã đạt giới hạn ${activeDeviceCount}/${maxDevices} thiết bị. Vui lòng liên hệ Admin để thu hồi một thiết bị cũ trước.`
-          );
-          return false;
-        }
-
         const requestPayload = {
-          requestType: 'EXISTING_SCHOOL',
-          schoolId,
-          licenseDocId: license.id,
-          orgName: license.data.orgName || '',
-          deviceId,
-          deviceName: payload.deviceName.trim(),
-          userName: payload.userName.trim(),
-          userRole: payload.userRole?.trim() || '',
-          phone: payload.phone?.trim() || '',
-          status: 'PENDING',
-        };
+  requestType: 'EXISTING_SCHOOL',
+  schoolId,
+  licenseDocId: '',
+  orgName: '',
+  deviceId,
+  deviceName: payload.deviceName.trim(),
+  userName: payload.userName.trim(),
+  userRole: payload.userRole?.trim() || '',
+  phone: payload.phone?.trim() || '',
+  status: 'PENDING',
+};
         
         const mysqlResult = await postLicenseApi<ClientLicenseRequestResponse>('/request', requestPayload);
 
@@ -1088,21 +1083,35 @@ const localPending = {
         phone: payload.phone?.trim() || '',
         status: 'PENDING',
       };
-      await registerTrial({
-      phone: requestPayload.phone,
-      contact_name: requestPayload.userName,
-      school_name: requestPayload.orgName,
+      const requestRes = await fetch('/VB/api/license/request', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(requestPayload),
 });
 
-      const docRef = await addDoc(collection(db, 'licenseRequests'), {
-        ...requestPayload,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+const requestText = await requestRes.text();
+let requestData: any = {};
+
+try {
+  requestData = JSON.parse(requestText);
+} catch {
+  requestData = {};
+}
+
+if (!requestRes.ok || requestData?.ok === false) {
+  throw new Error(
+    requestData?.error ||
+      requestData?.message ||
+      requestText ||
+      'Không gửi được yêu cầu đăng ký đơn vị lên MySQL.'
+  );
+}
 
       const localPending = {
         ...requestPayload,
-        id: docRef.id,
+        id: requestData.requestId || requestPayload.deviceId,
         createdAt: getNowIso(),
         updatedAt: getNowIso(),
       };

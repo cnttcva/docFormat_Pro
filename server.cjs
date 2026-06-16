@@ -1445,7 +1445,7 @@ app.post(
       const device = deviceRows[0] || null;
 
       if (!device) {
-        return res.status(404).json({
+        return res.status(200).json({
           ok: false,
           service: serviceName,
           status: 'UNREGISTERED',
@@ -1647,27 +1647,33 @@ app.post(
           }
 
           const licenseDocId = makeMysqlExternalDocId('LICENSE');
+          const activatedAt = now;
+          const expiresAtDate = new Date();
+          expiresAtDate.setFullYear(expiresAtDate.getFullYear() + 1);
+          const expiresAt = toMysqlDateTime3(expiresAtDate);
 
           await connection.execute(
             `
-              INSERT INTO licenses (
-                firestore_doc_id, school_id, org_name, license_type, status,
-                governing_body, location, party_cell, party_upper, departments,
-                max_devices, active_device_count, created_at, updated_at, firestore_raw_json
-              ) VALUES (?, ?, ?, 'SCHOOL', 'ACTIVE', ?, ?, ?, ?, ?, 15, 1, ?, ?, NULL)
-            `,
+                  INSERT INTO licenses (
+      firestore_doc_id, school_id, org_name, license_type, status,
+      activated_at, expires_at,
+      governing_body, location, party_cell, party_upper, departments,
+      max_devices, active_device_count, created_at, updated_at, firestore_raw_json
+    ) VALUES (?, ?, ?, 'SCHOOL', 'ACTIVE', ?, ?, ?, ?, ?, ?, ?, 15, 1, ?, ?, NULL)`,
             [
-              licenseDocId,
-              schoolId,
-              request.org_name || '',
-              request.governing_body || '',
-              request.location || '',
-              request.party_cell || '',
-              request.party_upper || '',
-              toMysqlJson(request.departments || ''),
-              now,
-              now,
-            ]
+  licenseDocId,
+  schoolId,
+  request.org_name || '',
+  activatedAt,
+  expiresAt,
+  request.governing_body || '',
+  request.location || '',
+  request.party_cell || '',
+  request.party_upper || '',
+  toMysqlJson(request.departments || ''),
+  now,
+  now,
+]
           );
 
           await connection.execute(
