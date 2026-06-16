@@ -257,14 +257,26 @@ export default function LicenseManager() {
   };
 
   const getAdminToken = async () => {
-    const currentUser = auth.currentUser;
+  const currentUser =
+    auth.currentUser ||
+    (await new Promise<typeof auth.currentUser>((resolve) => {
+      const unsubscribe = auth.onAuthStateChanged((user) => {
+        unsubscribe();
+        resolve(user);
+      });
 
-    if (!currentUser) {
-      throw new Error('Phiên đăng nhập Admin không còn hiệu lực. Vui lòng đăng nhập lại.');
-    }
+      setTimeout(() => {
+        unsubscribe();
+        resolve(auth.currentUser);
+      }, 3000);
+    }));
 
-    return currentUser.getIdToken();
-  };
+  if (!currentUser) {
+    throw new Error('Phiên đăng nhập Admin không còn hiệu lực. Vui lòng đăng nhập lại.');
+  }
+
+  return currentUser.getIdToken(true);
+};
 
   const callAdminMysqlApi = async <T extends { ok: boolean; error?: string }>(
     path: string,

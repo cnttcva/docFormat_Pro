@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, addDoc, deleteDoc, doc, query } from 'firebase/firestore';
-import { db } from '../../services/firebaseConfig';
+import { db, auth } from '../../services/firebaseConfig';
 import { Staff } from '../../types';
 import {
   Users,
@@ -103,22 +103,66 @@ export default function StaffManager() {
   };
 
   const fetchLicenses = async (): Promise<License[]> => {
-    try {
-      const q = query(collection(db, 'licenses'));
-      const snapshot = await getDocs(q);
-      const data: License[] = [];
+  try {
+    const currentUser =
+  auth.currentUser ||
+  (await new Promise<typeof auth.currentUser>((resolve) => {
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      unsubscribe();
+      resolve(user);
+    });
 
-      snapshot.forEach((licenseDoc) => {
-        data.push({ id: licenseDoc.id, ...licenseDoc.data() } as License);
-      });
+    setTimeout(() => {
+      unsubscribe();
+      resolve(auth.currentUser);
+    }, 3000);
+  }));
 
-      setLicenseList(data);
-      return data;
-    } catch (error) {
-      console.error('Lỗi khi tải dữ liệu bản quyền:', error);
-      return [];
+if (!currentUser) {
+  throw new Error('Phiên đăng nhập Admin không còn hiệu lực. Vui lòng đăng nhập lại.');
+}
+
+const token = await currentUser.getIdToken(true);
+    const response = await fetch('/VB/api/admin/mysql/licensing-dashboard', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || result?.ok !== true) {
+      throw new Error(result?.error || `API MySQL trả lỗi HTTP ${response.status}.`);
     }
-  };
+
+    const data: License[] = (Array.isArray(result.licenses) ? result.licenses : [])
+      .map((license: any) => ({
+        id: String(license.id || ''),
+        schoolId: String(license.schoolId || license.school_id || ''),
+        schoolName: String(license.schoolName || license.school_name || ''),
+        orgName: String(
+          license.orgName ||
+          license.org_name ||
+          license.schoolName ||
+          license.school_name ||
+          ''
+        ),
+        status: String(license.status || ''),
+      }))
+      .filter(
+        (license: License) =>
+          normalizeSchoolId(license.schoolId) &&
+          String(license.status || '').toUpperCase() === 'ACTIVE'
+      );
+
+    setLicenseList(data);
+    return data;
+  } catch (error: any) {
+    console.error('Lỗi khi tải dữ liệu bản quyền từ MySQL:', error);
+    alert(error?.message || 'Không thể tải dữ liệu bản quyền từ MySQL.');
+    return [];
+  }
+};
 
   useEffect(() => {
     fetchStaff();

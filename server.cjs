@@ -4,6 +4,11 @@
 // Application URL: https://docformatpro.com/VB/
 // Startup file: server.cjs
 
+try {
+  require('dotenv').config();
+} catch (error) {
+  // Dotenv chỉ dùng cho localhost; trên host dùng biến môi trường của DirectAdmin.
+}
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');

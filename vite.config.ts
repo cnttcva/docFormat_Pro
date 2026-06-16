@@ -8,10 +8,17 @@ export default defineConfig(({ mode }) => {
   return {
     base: '/VB/',
 
-    server: {
-      port: 3000,
-      host: '0.0.0.0',
+   server: {
+  port: 3000,
+  host: '0.0.0.0',
+  proxy: {
+    '/VB/api': {
+      target: 'https://docformatpro.com',
+      changeOrigin: true,
+      secure: false,
     },
+  },
+},
 
     plugins: [react()],
 

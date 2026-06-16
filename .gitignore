@@ -16,3 +16,4 @@ build/
 src/services/src/
 db.cjs
 db.js
+local-secrets/

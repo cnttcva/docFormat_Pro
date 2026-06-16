@@ -32,7 +32,9 @@ const dedupeDepartments = (departments: string[]) => {
     });
 };
 
-export const findLicenseDocIdBySchoolId = async (schoolId: string) => {
+export const findLicenseDocIdBySchoolId = async (
+  schoolId: string
+): Promise<string | null> => {
   const normalizedSchoolId = normalizeSchoolId(schoolId);
 
   console.log('[SyncDepartments] findLicenseDocIdBySchoolId:', normalizedSchoolId);
@@ -48,7 +50,10 @@ export const findLicenseDocIdBySchoolId = async (schoolId: string) => {
   console.log('[SyncDepartments] license docs found:', snap.size);
 
   if (snap.empty) {
-    throw new Error(`Không tìm thấy license của trường ${normalizedSchoolId}`);
+    console.warn(
+      `[SyncDepartments] Bỏ qua đồng bộ departments vào Firebase licenses vì không tìm thấy license legacy của trường ${normalizedSchoolId}.`
+    );
+    return null;
   }
 
   return snap.docs[0].id;
@@ -90,23 +95,31 @@ export const syncDepartmentsToLicense = async (
   console.log('[SyncDepartments] departments extracted:', departments);
 
   if (departments.length === 0) {
-    throw new Error(
-      `Không tìm thấy unitName nào trong collection staffs của trường ${normalizedSchoolId}.`
-    );
-  }
+  console.warn(
+    `[SyncDepartments] Không còn unitName nào trong collection staffs của trường ${normalizedSchoolId}; trả về danh sách departments rỗng.`
+  );
+  return [];
+}
 
   const finalLicenseDocId =
-    licenseDocId || await findLicenseDocIdBySchoolId(normalizedSchoolId);
+  licenseDocId || await findLicenseDocIdBySchoolId(normalizedSchoolId);
 
-  console.log('[SyncDepartments] updating license:', {
-    finalLicenseDocId,
-    departments,
-  });
+if (!finalLicenseDocId) {
+  console.warn(
+    `[SyncDepartments] Không có license Firebase legacy cho ${normalizedSchoolId}; chỉ lưu nhân sự, bỏ qua cập nhật departments vào licenses.`
+  );
+  return departments;
+}
 
-  await updateDoc(doc(db, 'licenses', finalLicenseDocId), {
-    departments,
-    departmentsUpdatedAt: serverTimestamp(),
-  });
+console.log('[SyncDepartments] updating license:', {
+  finalLicenseDocId,
+  departments,
+});
+
+await updateDoc(doc(db, 'licenses', finalLicenseDocId), {
+  departments,
+  departmentsUpdatedAt: serverTimestamp(),
+});
 
   console.log('[SyncDepartments] DONE:', {
     schoolId: normalizedSchoolId,
