@@ -137,79 +137,72 @@ const isDangUySchoolDecision = (
 const isQuyetDinhChiBo = (
   options: any,
   docType: string,
-  doc?: Document
+  doc: Document
 ): boolean => {
   const type = normalizeForDetect(docType || '');
   const headerType = normalizeForDetect(String(options?.headerType || ''));
   const specialType = normalizeForDetect(String(options?.specialDocumentType || ''));
   const templateType = normalizeForDetect(String(options?.templateType || ''));
 
-  if (
-    options?.isDecision === true &&
-    (
-      options?.isChiBoDecision === true ||
-      options?.isPartyDecision === true ||
-      specialType.includes('CHI BO') ||
-      specialType.includes('CAP UY CHI BO') ||
-      templateType.includes('CHI BO') ||
-      headerType.includes('CHI BO') ||
-      headerType.includes('DANG') ||
-      type.includes('CHI BO') ||
-      type.includes('CAP UY CHI BO') ||
-      type.includes('DANG')
-    )
-  ) {
-    return true;
-  }
+  const documentText = doc ? normalizeForDetect(doc.documentElement?.textContent || '') : '';
 
-  if (
+const declaredDocTypeText = `${type} ${specialType} ${templateType}`;
+
+const isExplicitNonDecisionDocument =
+  declaredDocTypeText.includes('BAO CAO') ||
+  declaredDocTypeText.includes('KE HOACH') ||
+  declaredDocTypeText.includes('CHUONG TRINH') ||
+  declaredDocTypeText.includes('NGHI QUYET') ||
+  declaredDocTypeText.includes('THONG BAO') ||
+  declaredDocTypeText.includes('KET LUAN') ||
+  declaredDocTypeText.includes('TO TRINH') ||
+  declaredDocTypeText.includes('BIEN BAN');
+
+if (isExplicitNonDecisionDocument) {
+  return false;
+}
+
+const isDecisionDocument =
+  type.includes('QUYET DINH') ||
+  specialType.includes('QUYET DINH') ||
+  templateType.includes('QUYET DINH') ||
+  documentText.includes('QUYET DINH');
+
+if (!isDecisionDocument) {
+  return false;
+}
+
+  const hasPartyContext =
     options?.isChiBoDecision === true ||
     options?.isPartyDecision === true ||
-    options?.isDangUySchoolDecision === true ||
     options?.isPartySchoolDecision === true ||
+    headerType.includes('PARTY') ||
+    headerType.includes('DANG') ||
+    headerType.includes('CHI BO') ||
     specialType.includes('CHI BO') ||
     specialType.includes('CAP UY CHI BO') ||
-    specialType.includes('DANG UY TRUONG') ||
-    specialType.includes('DANG BO TRUONG') ||
+    specialType.includes('DANG') ||
     templateType.includes('CHI BO') ||
-    templateType.includes('DANG UY TRUONG') ||
-    templateType.includes('DANG BO TRUONG') ||
-    headerType.includes('CHI BO') ||
-    headerType.includes('DANG UY TRUONG') ||
-    headerType.includes('DANG BO TRUONG') ||
-    (
-      type.includes('QUYET DINH') &&
-      (
-        type.includes('CHI BO') ||
-        type.includes('CAP UY CHI BO') ||
-        type.includes('DANG') ||
-        type.includes('DANG BO') ||
-        type.includes('DANG UY TRUONG') ||
-        type.includes('DANG BO TRUONG')
-      )
-    )
-  ) {
+    templateType.includes('CAP UY CHI BO') ||
+    templateType.includes('DANG') ||
+    type.includes('CHI BO') ||
+    type.includes('CAP UY CHI BO') ||
+    type.includes('DANG');
+
+  if (hasPartyContext) {
     return true;
   }
 
   if (doc) {
     const allText = normalizeForDetect(doc.documentElement?.textContent || '');
-    if (
-      allText.includes('CHI BO QUYET DINH') ||
-      allText.includes('CAP UY CHI BO') ||
-      allText.includes('CHI UY CHI BO') ||
+    return (
+      allText.includes('QUYET DINH') &&
       (
-        allText.includes('DANG CONG SAN VIET NAM') &&
-        allText.includes('CHI BO') &&
-        allText.includes('QUYET DINH')
+        allText.includes('CHI BO') ||
+        allText.includes('CAP UY CHI BO') ||
+        allText.includes('DANG CONG SAN VIET NAM')
       )
-    ) {
-      return true;
-    }
-
-    if (isDangUySchoolDecision(options, doc, docType)) {
-      return true;
-    }
+    );
   }
 
   return false;

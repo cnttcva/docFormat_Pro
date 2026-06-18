@@ -17,16 +17,17 @@ export const formatSmartDepartmentName = (fullName: string, maxLength: number = 
   }
 
   const splitKeywords = [
-    'TH - THCS',
-    'THCS',
-    'THPT',
-    'TH',
-    'TIỂU HỌC',
-    'TRUNG HỌC CƠ SỞ',
-    'TRUNG HỌC PHỔ THÔNG',
-    'MẦM NON',
-    'MẪU GIÁO'
-  ];
+  'PHƯỜNG',
+  'XÃ',
+  'TH - THCS',
+  'THCS',
+  'THPT',
+  'TH',
+  'TIỂU HỌC',
+  'TRUNG HỌC CƠ SỞ',
+  'TRUNG HỌC PHỔ THÔNG',
+  'MẦM NON'
+];
 
   const upperFullName = fullName.toUpperCase();
 
@@ -115,29 +116,43 @@ const normalizeReceiverEnd = (text: string, index: number, total: number, isPart
 // có governingBody/orgName nhưng thiếu partyUpper/partyCell, header Đảng bị
 // mất 2 dòng "ĐẢNG BỘ ... / CHI BỘ ..." vì appendSmartLines nhận chuỗi rỗng.
 const buildOrgWithDefaults = (rawOrg: any) => {
-  const orgDefaults = {
-    governingBody: 'UBND XÃ EA KAR',
-    orgName: 'TRƯỜNG THCS CHU VĂN AN',
-    partyUpper: 'ĐẢNG BỘ XÃ EA KAR',
-    partyCell: 'CHI BỘ TRƯỜNG THCS CHU VĂN AN',
-    location: 'Ea Kar',
-    departmentName: 'TỔ CHUYÊN MÔN'
-  };
+  const safe = rawOrg || {};
 
   const pickNonEmpty = (val: any, fallback: string): string => {
     const s = String(val || '').trim();
     return s.length > 0 ? s : fallback;
   };
 
-  const safe = rawOrg || {};
+  const toUpper = (text: string): string => String(text || '').trim().toLocaleUpperCase('vi-VN');
+
+  const buildPartyUpperFromGoverningBody = (governingBody: string): string => {
+    const upper = toUpper(governingBody);
+
+    if (upper.startsWith('UBND ')) {
+      return `ĐẢNG BỘ ${upper.replace(/^UBND\s+/, '')}`;
+    }
+
+    if (upper.startsWith('ỦY BAN NHÂN DÂN ')) {
+      return `ĐẢNG BỘ ${upper.replace(/^ỦY BAN NHÂN DÂN\s+/, '')}`;
+    }
+
+    return 'ĐẢNG BỘ XÃ EA KAR';
+  };
+
+  const buildPartyCellFromOrgName = (orgName: string): string => {
+    return `CHI BỘ ${toUpper(orgName)}`;
+  };
+
+  const governingBody = pickNonEmpty(safe.governingBody, 'UBND XÃ EA KAR');
+  const orgName = pickNonEmpty(safe.orgName, 'TRƯỜNG THCS CHU VĂN AN');
 
   return {
-    governingBody: pickNonEmpty(safe.governingBody, orgDefaults.governingBody),
-    orgName: pickNonEmpty(safe.orgName, orgDefaults.orgName),
-    partyUpper: pickNonEmpty(safe.partyUpper, orgDefaults.partyUpper),
-    partyCell: pickNonEmpty(safe.partyCell, orgDefaults.partyCell),
-    location: pickNonEmpty(safe.location, orgDefaults.location),
-    departmentName: pickNonEmpty(safe.departmentName, orgDefaults.departmentName)
+    governingBody,
+    orgName,
+    partyUpper: pickNonEmpty(safe.partyUpper, buildPartyUpperFromGoverningBody(governingBody)),
+    partyCell: pickNonEmpty(safe.partyCell, buildPartyCellFromOrgName(orgName)),
+    location: pickNonEmpty(safe.location, 'Ea Kar'),
+    departmentName: pickNonEmpty(safe.departmentName, 'TỔ CHUYÊN MÔN')
   };
 };
 
@@ -146,45 +161,37 @@ const generateSmartReceivers = (headerType: HeaderType, docType: string, org: an
   const isDecision = options.isDecision === true || type.includes('QUYẾT ĐỊNH');
 
   // I. VĂN BẢN ĐẢNG / CHI BỘ
-  if (headerType === HeaderType.PARTY) {
-    if (isDecision) return [`- Như Điều ...`, `- ${org.partyUpper}`, `- Lưu: Chi bộ`];
+if (headerType === HeaderType.PARTY) {
+  if (isDecision) return [`- Như Điều ...`, `- ${org.partyUpper}`, `- Lưu: Chi bộ`];
 
-    if (type.includes('NGHỊ QUYẾT')) {
-      return [
-        `- ${org.partyUpper}`,
-        `- Đảng viên chi bộ`,
-        `- Ban Giám hiệu nhà trường`,
-        `- Các tổ chức đoàn thể`,
-        `- Lưu: Chi bộ`
-      ];
-    }
+  const toViTitleCase = (value: string): string =>
+    String(value || '')
+      .toLocaleLowerCase('vi-VN')
+      .replace(/(^|\s)(\S)/g, (_match, space: string, char: string) => {
+        return `${space}${char.toLocaleUpperCase('vi-VN')}`;
+      });
 
-    if (type.includes('KẾ HOẠCH') || type.includes('CHƯƠNG TRÌNH')) {
-      return [
-        `- ${org.partyUpper}`,
-        `- Chi ủy, đảng viên chi bộ`,
-        `- Ban Giám hiệu`,
-        `- Các tổ chức đoàn thể`,
-        `- Lưu: Chi bộ`
-      ];
-    }
+  const lowerFirstWord = (value: string): string =>
+    String(value || '').replace(/^(\S+)/, firstWord => firstWord.toLocaleLowerCase('vi-VN'));
 
-    if (type.includes('BIÊN BẢN')) return [`- Chi ủy`, `- Đảng viên chi bộ`, `- Lưu: Chi bộ`];
-    if (type.includes('TỜ TRÌNH')) return [`- ${org.partyUpper} (để xem xét, quyết định)`, `- Lưu: Chi bộ`];
+  const buildPartyCommitteeReceiver = (partyUpper: string): string => {
+    const unitName = String(partyUpper || '')
+      .replace(/^ĐẢNG BỘ\s+/i, '')
+      .trim();
 
-    if (type.includes('THÔNG BÁO') || type.includes('KẾT LUẬN')) {
-      return [
-        `- Đảng viên chi bộ`,
-        `- Ban Giám hiệu`,
-        `- Các tổ chức đoàn thể`,
-        `- Lưu: Chi bộ`
-      ];
-    }
+    const formattedUnitName = lowerFirstWord(toViTitleCase(unitName));
 
-    if (type.includes('BÁO CÁO')) return [`- ${org.partyUpper}`, `- Lưu: Chi bộ`];
+    return `Đảng ủy ${formattedUnitName}`;
+  };
 
-    return [`- ${org.partyUpper} (b/c)`, `- Đảng viên chi bộ (t/h)`, `- Lưu: Chi bộ`];
-  }
+  return [
+    `- ${buildPartyCommitteeReceiver(org.partyUpper)}`,
+    '- Cấp ủy chi bộ',
+    '- Đảng viên chi bộ',
+    '- Các tổ chức đoàn thể',
+    '- Lưu Chi bộ'
+  ];
+}
 
   // II. VĂN BẢN NỘI BỘ / TỔ CHUYÊN MÔN
   // KHOÁ CỨNG NƠI NHẬN
@@ -903,11 +910,13 @@ export const createSignatureBlock = (doc: Document, options: any, docType: strin
   const isDecision = options.isDecision === true || docType?.toUpperCase?.().includes('QUYẾT ĐỊNH');
 
   const finalReceivers =
-    options.headerType === HeaderType.SCHOOL || options.headerType === HeaderType.DEPARTMENT
-      ? generateSmartReceivers(options.headerType, docType, org, options)
-      : (options.extractedReceivers && options.extractedReceivers.length > 0)
-        ? options.extractedReceivers
-        : generateSmartReceivers(options.headerType, docType, org, options);
+  options.headerType === HeaderType.PARTY ||
+  options.headerType === HeaderType.SCHOOL ||
+  options.headerType === HeaderType.DEPARTMENT
+    ? generateSmartReceivers(options.headerType, docType, org, options)
+    : (options.extractedReceivers && options.extractedReceivers.length > 0)
+      ? options.extractedReceivers
+      : generateSmartReceivers(options.headerType, docType, org, options);
 
   switch (options.headerType) {
     case HeaderType.PARTY: {

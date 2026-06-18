@@ -27,17 +27,16 @@ const isPartyHeaderType = (headerType: unknown): boolean => {
 const isChiBoDecisionFromDocument = (doc: Document): boolean => {
   const text = normalizeForDetect(doc?.documentElement?.textContent || '');
 
-  return (
-    text.includes('CHI BO QUYET DINH') ||
+  const hasDecisionKeyword = text.includes('QUYET DINH');
+
+  const hasPartyContext =
+    text.includes('CHI BO') ||
     text.includes('CAP UY CHI BO') ||
-    text.includes('CHI UY CHI BO') ||
-    text.includes('CHI BO TRUONG') ||
-    text.includes('DANG UY XA') ||
-    (
-      text.includes('DANG CONG SAN VIET NAM') &&
-      text.includes('CHI BO')
-    )
-  );
+    text.includes('DANG UY') ||
+    text.includes('DANG BO') ||
+    text.includes('DANG CONG SAN VIET NAM');
+
+  return hasDecisionKeyword && hasPartyContext;
 };
 
 const isChiBoDecisionFromOptions = (
@@ -47,20 +46,45 @@ const isChiBoDecisionFromOptions = (
 ): boolean => {
   const specialType = normalizeForDetect(String(options?.specialDocumentType || ''));
   const type = normalizeForDetect(docType || String(options?.docType || ''));
+  const templateType = normalizeForDetect(String(options?.templateType || ''));
+
+  const declaredDocTypeText = `${specialType} ${type} ${templateType}`;
+
+  const isExplicitNonDecisionDocument =
+    declaredDocTypeText.includes('BAO CAO') ||
+    declaredDocTypeText.includes('KE HOACH') ||
+    declaredDocTypeText.includes('CHUONG TRINH') ||
+    declaredDocTypeText.includes('NGHI QUYET') ||
+    declaredDocTypeText.includes('THONG BAO') ||
+    declaredDocTypeText.includes('KET LUAN') ||
+    declaredDocTypeText.includes('TO TRINH') ||
+    declaredDocTypeText.includes('BIEN BAN');
+
+  if (isExplicitNonDecisionDocument) {
+    return false;
+  }
+
+  const hasDecisionKeyword =
+    specialType.includes('QUYET DINH') ||
+    type.includes('QUYET DINH') ||
+    templateType.includes('QUYET DINH') ||
+    isChiBoDecisionFromDocument(doc);
+
+  if (!hasDecisionKeyword) {
+    return false;
+  }
 
   return (
-    options?.isChiBoDecision === true ||
-    options?.isPartyDecision === true ||
-    specialType.includes('QUYET DINH CHI BO') ||
-    specialType.includes('QUYET DINH CAP UY CHI BO') ||
+    isPartyHeaderType(options?.headerType) ||
+    specialType.includes('CHI BO') ||
     specialType.includes('CAP UY CHI BO') ||
+    specialType.includes('DANG') ||
+    templateType.includes('CHI BO') ||
+    templateType.includes('CAP UY CHI BO') ||
+    templateType.includes('DANG') ||
+    type.includes('CHI BO') ||
     type.includes('CAP UY CHI BO') ||
-    type.includes('CHI BO DANG') ||
-    isChiBoDecisionFromDocument(doc) ||
-    (
-      options?.isDecision === true &&
-      isPartyHeaderType(options?.headerType)
-    )
+    type.includes('DANG')
   );
 };
 
