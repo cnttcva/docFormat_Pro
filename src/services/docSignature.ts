@@ -197,17 +197,28 @@ const generateSmartReceivers = (headerType: HeaderType, docType: string, org: an
   }
 
   // III. VĂN BẢN HÀNH CHÍNH NHÀ TRƯỜNG
-  // KHOÁ CỨNG NƠI NHẬN, KHÔNG DÙNG "- Như trên"
-  if (headerType === HeaderType.SCHOOL) {
-    return [
-      `- UBND xã Ea Kar`,
-      `- Phòng Văn hoá - Xã hội (b/c)`,
-      `- Lãnh đạo trường`,
-      `- Các Tổ chuyên môn`,
-      `- Các bộ phận liên quan`,
-      `- Lưu: VT`
-    ];
-  }
+// Nơi nhận dùng cơ quan chủ quản theo license hiện tại, không hard-code địa phương.
+if (headerType === HeaderType.SCHOOL) {
+  const governingBodyText = String(org?.governingBody || '').trim();
+
+  const receiverGoverningBody = governingBodyText
+    .toLowerCase()
+    .replace(/^ubnd\s+/, 'UBND ')
+    .replace(/(^|\s)([a-zà-ỹ])/g, (_match, space, char) => `${space}${char.toUpperCase()}`)
+    .replace(
+      /^UBND\s+(Xã|Phường|Thị Trấn)\s+/i,
+      (_match, unit) => `UBND ${String(unit).toLowerCase()} `
+    );
+
+  return [
+    `- ${receiverGoverningBody} (b/c)`,
+    `- Phòng Văn hoá - Xã hội (b/c)`,
+    `- Lãnh đạo trường`,
+    `- Các tổ chuyên môn`,
+    `- Các bộ phận liên quan`,
+    `- Lưu: VT`
+  ];
+}
 
   return [`- Lưu: VT`];
 };

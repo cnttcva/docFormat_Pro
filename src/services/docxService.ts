@@ -2771,12 +2771,11 @@ await removeAutomaticNumbering(doc, zip, parser, finalOptions);
      * để tránh lỗi đổi chữ hoa/thường như:
      * "Phòng Văn hoá - Xã hội" -> "Phòng văn hoá - xã Hội".
      */
-    const skipAutoFormatNoiNhanForSpecialDecision =
-      finalOptions.headerType === HeaderType.SCHOOL &&
-      finalOptions.isDecision === true;
+    const skipAutoFormatNoiNhanForSchool =
+  finalOptions.headerType === HeaderType.SCHOOL;
 
     for (const p of allFinalParagraphs) {
-        if (skipAutoFormatNoiNhanForSpecialDecision) continue;
+        if (skipAutoFormatNoiNhanForSchool) continue;
 
         const textNodes = getNodes(p, "t");
 
