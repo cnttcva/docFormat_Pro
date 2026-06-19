@@ -44,7 +44,17 @@ const getDirectBodyBlocks = (body: Element): Element[] => {
 };
 
 const getText = (el: Element): string => {
-  return normalizeText(el.textContent || '');
+  const textNodes = Array.from(el.getElementsByTagNameNS(W_NS, 't'));
+
+  if (textNodes.length === 0) {
+    return '';
+  }
+
+  return normalizeText(
+    textNodes
+      .map(node => node.textContent || '')
+      .join('')
+  );
 };
 
 const cleanSignerTitle = (title: string): string => {
@@ -1584,15 +1594,12 @@ const getQuyetDinhNTReceivers = (options: any, doc: Document): string[] => {
     return options.receivers.map((item: unknown) => String(item || '')).filter(Boolean);
   }
 
-  const executionArticleNumber = getMainDecisionExecutionArticleNumber(doc);
-
   return [
-    '- Cấp ủy chi bộ (b/c)',
-    `- Như Điều ${executionArticleNumber} (t/h)`,
-    '- Các tổ chuyên môn',
-    '- Các tổ chức Đoàn thể',
-    '- Lưu: VT'
-  ];
+  '- Như Điều ...... (t/h)',
+  '- Các tổ chuyên môn',
+  '- Các tổ chức Đoàn thể',
+  '- Lưu: VT'
+];
 };
 
 const normalizeReceiverEnd = (text: string, index: number, total: number): string => {

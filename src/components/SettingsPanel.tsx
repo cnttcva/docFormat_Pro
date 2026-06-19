@@ -207,7 +207,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             onChange={(e) => handleHeaderTypeChange(e.target.value as HeaderType)}
             className="w-full px-4 py-3.5 bg-slate-50/50 hover:bg-white border border-slate-200 rounded-xl text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-500 cursor-pointer text-slate-700 transition-all"
           >
-            <option value={HeaderType.NONE}>❌ Bỏ qua (Không chèn thêm)</option>
+            <option value={HeaderType.NONE} disabled>-- Chọn loại văn bản --</option>
             <option value={HeaderType.SCHOOL}>🏫 Mẫu Văn bản Hành chính (Nhà trường / Cơ quan)</option>
             <option value={HeaderType.PARTY}>⭐ Mẫu Văn bản Công tác Đảng (Chi bộ)</option>
             <option value={HeaderType.DEPARTMENT}>📚 Mẫu Văn bản Nội bộ (Tổ chuyên môn)</option>

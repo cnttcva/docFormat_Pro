@@ -499,11 +499,19 @@ setTrialRemaining(nextRemaining);
   };
 
   const handleReset = () => {
-    setFile(null);
-    setStatus(ProcessingStatus.IDLE);
-    setResult(null);
-  };
+  setFile(null);
+  setStatus(ProcessingStatus.IDLE);
+  setResult(null);
+  setShowSettings(false);
 
+  setOptions((prev: any) => ({
+    ...prev,
+    headerType: HeaderType.NONE,
+    isCongVan: false,
+    isMinutes: false,
+    isDecision: false,
+  }));
+};
   const handleActivate = async () => {
     const isSuccess = await handleActivateLicense(setOptions, options);
     if (isSuccess) setShowOrgSettings(false);
@@ -519,6 +527,10 @@ setTrialRemaining(nextRemaining);
     showPDFErrorModal('helper_not_running', '');
   };
 
+  const hasSelectedHeaderType =
+  options.headerType === HeaderType.SCHOOL ||
+  options.headerType === HeaderType.PARTY ||
+  options.headerType === HeaderType.DEPARTMENT;
   return (
     <div className="min-h-screen bg-[#f4f7fb] text-slate-800 font-sans flex flex-col relative overflow-hidden selection:bg-violet-200 selection:text-violet-900">
       <div className="absolute top-[-10%] left-[-10%] w-[600px] h-[600px] bg-violet-200/40 rounded-full blur-[100px] pointer-events-none z-0"></div>
@@ -682,7 +694,7 @@ setTrialRemaining(nextRemaining);
                 <div className="bg-slate-50/50 rounded-3xl p-2 border border-dashed border-slate-200 hover:border-violet-300 hover:bg-violet-50/30 transition-all duration-300">
                   <Dropzone
                     onFileSelect={handleFileSelect}
-                    disabled={isUploadDisabled || !canUseApp}
+                    disabled={isUploadDisabled || !canUseApp || !hasSelectedHeaderType}
                   />
                 </div>
               </div>

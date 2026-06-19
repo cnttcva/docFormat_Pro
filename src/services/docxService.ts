@@ -1813,6 +1813,19 @@ await removeAutomaticNumbering(doc, zip, parser, finalOptions);
         return /^Ngày\s+\d{1,2}\s+tháng\s+\d{1,2}\s+năm\s+\d{4}/i.test(t);
     };
 
+    const getParagraphVisibleText = (p: Element): string => {
+    const textNodes = getNodes(p, "t");
+
+    if (textNodes.length === 0) {
+        return "";
+    }
+
+    return textNodes
+        .map(node => node.textContent || "")
+        .join("")
+        .trim();
+};
+
     const paragraphs = getNodes(doc, "p");
     let detectedDocType = "";
     const docTypeElements = new Set<Element>();
@@ -1829,7 +1842,7 @@ await removeAutomaticNumbering(doc, zip, parser, finalOptions);
 
         if (isTableParagraph(p)) continue;
 
-        const text = p.textContent?.trim() || "";
+        const text = getParagraphVisibleText(p);
 
         if (!text) continue;
 
@@ -1889,7 +1902,7 @@ await removeAutomaticNumbering(doc, zip, parser, finalOptions);
 
                 if (isTableParagraph(tempP)) break;
 
-                const tempText = tempP.textContent?.trim() || "";
+                const tempText = getParagraphVisibleText(tempP);
 
                 if (tempText.length > 0) {
                     const upperText = tempText.toUpperCase();
