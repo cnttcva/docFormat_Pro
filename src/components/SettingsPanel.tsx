@@ -213,7 +213,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             <option value={HeaderType.DEPARTMENT}>📚 Mẫu Văn bản Nội bộ (Tổ chuyên môn)</option>
           </select>
 
-          {(options.headerType === HeaderType.SCHOOL || options.headerType === HeaderType.PARTY) && (
+          {(options.headerType === HeaderType.SCHOOL ||
+          options.headerType === HeaderType.PARTY ||
+          options.headerType === HeaderType.DEPARTMENT) && (
             <div className="mt-4 animate-fadeIn bg-slate-50/50 p-4 rounded-2xl border border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-5">
               <div>
                 <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
@@ -222,11 +224,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
                 <select
                   value={options.docSymbol || ""}
-                  onChange={(e) => setOptions({ ...options, docSymbol: e.target.value })}
+                  onChange={(e) => {
+                  const docSymbol = e.target.value;
+
+                  setOptions({
+                  ...options,
+                  docSymbol,
+                  isMinutes: docSymbol === 'BB',
+                  isCongVan: docSymbol === 'CV',
+                  isDecision: docSymbol === 'QĐ' || docSymbol === 'QD',
+  });
+}}
                   className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-500 text-slate-700 transition-all"
                 >
-                  <option value="">--- Chọn ký hiệu ---</option>
-                  {(options.headerType === HeaderType.SCHOOL ? hanhChinhSymbols : dangSymbols).map(sym => (
+                  <option value="" disabled>-- Chọn loại văn bản cần định dạng --</option>
+                  {(options.headerType === HeaderType.PARTY ? dangSymbols : hanhChinhSymbols).map(sym => (
                     <option key={sym.value} value={sym.value}>{sym.name}</option>
                   ))}
                 </select>

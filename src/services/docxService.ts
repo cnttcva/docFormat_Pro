@@ -2397,7 +2397,7 @@ await removeAutomaticNumbering(doc, zip, parser, finalOptions);
         }
       }
 
-      const isRomanHeading = /^[IVXLCDM]+[\.\)]\s*\S/i.test(trimmedPText);
+      const isRomanHeading = /^[IVXLCDM]+\.\s+\S/.test(trimmedPText);
       const isNumberHeading = /^\d+(?:\.\d+)*[\.\)]\s*\S/.test(trimmedPText);
 
       let isHeading = isRomanHeading || isNumberHeading;
