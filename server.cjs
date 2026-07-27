@@ -10,6 +10,7 @@ try {
   // Dotenv chỉ dùng cho localhost; trên host dùng biến môi trường của DirectAdmin.
 }
 const express = require('express');
+const aiRouter = require('./server/ai/aiRouter.cjs');
 const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
@@ -19,6 +20,13 @@ const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const { pathToFileURL } = require('url');
 // ============================================================
+let nodemailer = null;
+
+try {
+  nodemailer = require('nodemailer');
+} catch (error) {
+  console.warn('[MAIL] nodemailer is not installed. Admin email notification will be skipped.');
+}
 // MYSQL DATABASE - LICENSING STAGE
 // ============================================================
 
@@ -192,6 +200,8 @@ app.use(
 );
 
 app.use(express.json());
+// Module Trợ lý Văn phòng AI - độc lập với pipeline DOCX hiện có.
+app.use('/VB/api/ai', aiRouter);
 
 // ============================================================
 // FILE UPLOAD
@@ -1320,6 +1330,10 @@ app.post(
           requestedSchoolId: schoolId || null,
           licenseDocId: license?.firestore_doc_id || null,
           orgName: license?.org_name || String(body.orgName || '').trim() || null,
+          governingBody: license?.governing_body || String(body.governingBody || body.governing_body || '').trim() || null,
+          location: license?.location || String(body.location || '').trim() || null,
+          partyUpper: license?.party_upper || String(body.partyUpper || body.party_upper || '').trim() || null,
+          partyCell: license?.party_cell || String(body.partyCell || body.party_cell || '').trim() || null,
           deviceId,
           deviceName,
           userName,
@@ -1336,6 +1350,10 @@ app.post(
               school_id,
               requested_school_id,
               org_name,
+              governing_body,
+              location,
+              party_upper,
+              party_cell,
               device_id,
               device_name,
               user_name,
@@ -1347,7 +1365,7 @@ app.post(
               updated_at,
               firestore_raw_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, CAST(? AS JSON))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, CAST(? AS JSON))
           `,
           [
             requestId,
@@ -1355,6 +1373,10 @@ app.post(
             requestPayload.schoolId,
             requestPayload.requestedSchoolId,
             requestPayload.orgName,
+            requestPayload.governingBody,
+            requestPayload.location,
+            requestPayload.partyUpper,
+            requestPayload.partyCell,
             requestPayload.deviceId,
             requestPayload.deviceName,
             requestPayload.userName,
@@ -1386,6 +1408,9 @@ app.post(
           message: 'Yêu cầu cấp phép đã được gửi lên hệ thống.',
         };
       });
+      if (!result.alreadyPending) {
+      void sendAdminLicenseRequestEmail(result);
+  }
 
       return res.json({
         ok: true,
@@ -1572,7 +1597,236 @@ receivers: parseMysqlJsonValue(device.receivers) || [],
     }
   }
 );
+app.post(
+  ['/api/license/restore', '/VB/api/license/restore'],
+  async (req, res) => {
+    const serviceName = 'docFormat Pro MySQL Restore License Device';
 
+    try {
+      const body = req.body || {};
+      const deviceId = String(body.deviceId || '').trim();
+      const schoolId = normalizeLicensingSchoolId(body.schoolId || body.school_id || '');
+      const phoneOrZalo = String(body.phoneOrZalo || body.phone || body.zalo || '').trim();
+      const deviceName = String(body.deviceName || body.device_name || '').trim();
+
+      if (!deviceId) {
+        throw makeApiError('Thiếu mã thiết bị.', 400);
+      }
+
+      if (!schoolId) {
+        throw makeApiError('Thiếu mã đơn vị.', 400);
+      }
+
+      if (!phoneOrZalo) {
+        throw makeApiError('Thiếu số điện thoại/Zalo đã đăng ký.', 400);
+      }
+
+      const normalizeRestorePhone = (value) =>
+        String(value || '')
+          .replace(/[\s.\-()+/]/g, '')
+          .toLowerCase();
+
+      const phoneKey = normalizeRestorePhone(phoneOrZalo);
+      const altPhoneKey =
+        phoneKey.startsWith('84')
+          ? `0${phoneKey.slice(2)}`
+          : phoneKey.startsWith('0')
+            ? `84${phoneKey.slice(1)}`
+            : phoneKey;
+
+      const device = await runMysqlTransaction(async (connection) => {
+        const [licenseRows] = await connection.execute(
+          `
+            SELECT *
+            FROM licenses
+            WHERE school_id = ?
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [schoolId]
+        );
+
+        const license = licenseRows[0] || null;
+
+        if (!license) {
+          throw makeApiError('Không tìm thấy bản quyền theo mã đơn vị đã nhập.', 404);
+        }
+
+        if ((license.status || 'ACTIVE') !== 'ACTIVE') {
+          throw makeApiError('Bản quyền của đơn vị chưa hoạt động hoặc đã bị khóa.', 403);
+        }
+
+        if (license.expires_at && new Date(license.expires_at).getTime() < Date.now()) {
+          await connection.execute(
+            `
+              UPDATE licenses
+              SET status = 'EXPIRED',
+                  updated_at = ?
+              WHERE firestore_doc_id = ?
+            `,
+            [toMysqlDateTime3(new Date()), license.firestore_doc_id]
+          );
+
+          throw makeApiError(
+            'Bản quyền đã hết hạn. Vui lòng gửi yêu cầu gia hạn bản quyền.',
+            403
+          );
+        }
+
+        const [oldDeviceRows] = await connection.execute(
+          `
+            SELECT *
+            FROM license_devices
+            WHERE license_doc_id = ?
+              AND school_id = ?
+              AND LOWER(
+                REPLACE(
+                  REPLACE(
+                    REPLACE(
+                      REPLACE(
+                        REPLACE(
+                          REPLACE(
+                            REPLACE(COALESCE(phone, ''), ' ', ''),
+                          '-', ''),
+                        '.', ''),
+                      '(', ''),
+                    ')', ''),
+                  '+', ''),
+                '/', '')
+              ) IN (?, ?)
+            ORDER BY
+              CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END,
+              updated_at DESC
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [license.firestore_doc_id, schoolId, phoneKey, altPhoneKey]
+        );
+
+        const oldDevice = oldDeviceRows[0] || null;
+
+        if (!oldDevice) {
+          throw makeApiError(
+            'Không tìm thấy thiết bị/bản quyền theo số điện thoại/Zalo và mã đơn vị đã nhập.',
+            404
+          );
+        }
+
+        if (oldDevice.status === 'REVOKED' || oldDevice.status === 'BLOCKED') {
+          throw makeApiError('Thiết bị cũ đã bị thu hồi hoặc bị khóa, không thể khôi phục.', 403);
+        }
+
+        const now = toMysqlDateTime3(new Date());
+
+        await connection.execute(
+          `
+            UPDATE license_devices
+            SET firestore_doc_id = ?,
+                device_id = ?,
+                device_name = ?,
+                status = 'ACTIVE',
+                last_seen_at = ?,
+                updated_at = ?
+            WHERE firestore_doc_id = ?
+          `,
+          [
+            deviceId,
+            deviceId,
+            deviceName || oldDevice.device_name || 'Thiết bị khôi phục',
+            now,
+            now,
+            oldDevice.firestore_doc_id,
+          ]
+        );
+
+        const [deviceRows] = await connection.execute(
+          `
+            SELECT
+              d.*,
+              l.firestore_doc_id AS license_firestore_doc_id,
+              l.activation_code,
+              l.license_type,
+              l.max_devices,
+              l.active_device_count,
+              l.status AS license_status,
+              l.activated_at,
+              l.expires_at,
+              l.renew_requested_at,
+              l.renewed_at,
+              l.governing_body,
+              l.location,
+              l.party_cell,
+              l.party_upper,
+              l.departments,
+              l.receivers
+            FROM license_devices d
+            LEFT JOIN licenses l ON l.firestore_doc_id = d.license_doc_id
+            WHERE d.device_id = ?
+            LIMIT 1
+          `,
+          [deviceId]
+        );
+
+        return deviceRows[0] || null;
+      });
+
+      if (!device) {
+        throw makeApiError('Không thể khôi phục thiết bị.', 500);
+      }
+
+      return res.json({
+        ok: true,
+        service: serviceName,
+        status: 'ACTIVE',
+        restored: true,
+        device: {
+          id: device.firestore_doc_id,
+          firestoreDocId: device.firestore_doc_id,
+          licenseDocId: device.license_doc_id,
+          schoolId: device.school_id,
+          orgName: device.org_name,
+          deviceId: device.device_id,
+          deviceName: device.device_name,
+          userName: device.user_name,
+          userRole: device.user_role,
+          phone: device.phone,
+          status: device.status,
+          activatedAt: device.activated_at,
+          lastSeenAt: device.last_seen_at,
+        },
+        license: {
+          id: device.license_doc_id,
+          firestoreDocId: device.license_doc_id,
+          activationCode: device.activation_code,
+          schoolId: device.school_id,
+          orgName: device.org_name,
+          licenseType: device.license_type,
+          status: device.license_status || 'ACTIVE',
+          activatedAt: device.activated_at || null,
+          expiresAt: device.expires_at || null,
+          renewRequestedAt: device.renew_requested_at || null,
+          renewedAt: device.renewed_at || null,
+          maxDevices: Number(device.max_devices || 15),
+          activeDeviceCount: Number(device.active_device_count || 0),
+          governingBody: device.governing_body || '',
+          location: device.location || '',
+          partyCell: device.party_cell || '',
+          partyUpper: device.party_upper || '',
+          departments: parseMysqlJsonValue(device.departments) || [],
+          receivers: parseMysqlJsonValue(device.receivers) || [],
+        },
+      });
+    } catch (error) {
+      console.error(`[${serviceName}]`, error);
+
+      return res.status(error.httpStatus || error.statusCode || error.status || 500).json({
+        ok: false,
+        service: serviceName,
+        error: error.message || 'Không thể khôi phục bản quyền.',
+      });
+    }
+  }
+);
 app.post(
   [
     '/api/admin/mysql/license-requests/:requestId/approve',
@@ -1961,6 +2215,201 @@ app.delete(
   }
 );
 
+app.patch(
+  [
+    '/api/admin/mysql/licenses/:licenseId/organization-profile',
+    '/VB/api/admin/mysql/licenses/:licenseId/organization-profile',
+  ],
+  requireAdminAuth,
+  async (req, res) => {
+    const serviceName =
+      'docFormat Pro MySQL Update License Organization Profile';
+
+    try {
+      const licenseId = requireRouteIdentifier(
+        req.params.licenseId,
+        'licenseId'
+      );
+
+      const body = req.body || {};
+
+      const editableFields = [
+        {
+          bodyKey: 'orgName',
+          columnName: 'org_name',
+          allowEmpty: false,
+        },
+        {
+          bodyKey: 'governingBody',
+          columnName: 'governing_body',
+          allowEmpty: true,
+        },
+        {
+          bodyKey: 'location',
+          columnName: 'location',
+          allowEmpty: true,
+        },
+        {
+          bodyKey: 'partyUpper',
+          columnName: 'party_upper',
+          allowEmpty: true,
+        },
+        {
+          bodyKey: 'partyCell',
+          columnName: 'party_cell',
+          allowEmpty: true,
+        },
+      ];
+
+      const assignments = [];
+      const values = [];
+      const normalizedUpdates = {};
+
+      for (const field of editableFields) {
+        const wasProvided =
+          Object.prototype.hasOwnProperty.call(
+            body,
+            field.bodyKey
+          );
+
+        if (!wasProvided) continue;
+
+        const normalizedValue = String(
+          body[field.bodyKey] ?? ''
+        ).trim();
+
+        if (
+          !field.allowEmpty &&
+          !normalizedValue
+        ) {
+          throw makeApiError(
+            'Tên đơn vị không được để trống.',
+            400
+          );
+        }
+
+        assignments.push(
+          `${field.columnName} = ?`
+        );
+
+        values.push(normalizedValue);
+
+        normalizedUpdates[field.bodyKey] =
+          normalizedValue;
+      }
+
+      if (assignments.length === 0) {
+        throw makeApiError(
+          'Không có thông tin hồ sơ đơn vị nào được gửi để cập nhật.',
+          400
+        );
+      }
+
+      const result = await runMysqlTransaction(
+        async (connection) => {
+          const license =
+            await getLockedLicenseByDocId(
+              connection,
+              licenseId
+            );
+
+          if (!license) {
+            throw makeApiError(
+              'Hồ sơ bản quyền không tồn tại.',
+              404
+            );
+          }
+
+          const now = toMysqlDateTime3(
+            new Date()
+          );
+
+          await connection.execute(
+            `
+              UPDATE licenses
+              SET ${assignments.join(', ')},
+                  updated_at = ?
+              WHERE firestore_doc_id = ?
+            `,
+            [
+              ...values,
+              now,
+              licenseId,
+            ]
+          );
+
+          if (
+            Object.prototype.hasOwnProperty.call(
+              normalizedUpdates,
+              'orgName'
+            )
+          ) {
+            await connection.execute(
+              `
+                UPDATE license_devices
+                SET org_name = ?,
+                    updated_at = ?
+                WHERE license_doc_id = ?
+                   OR (
+                     ? IS NOT NULL
+                     AND school_id = ?
+                   )
+              `,
+              [
+                normalizedUpdates.orgName,
+                now,
+                license.firestore_doc_id,
+                license.school_id || null,
+                license.school_id || null,
+              ]
+            );
+          }
+
+          const [updatedRows] =
+            await connection.execute(
+              `
+                SELECT
+                  firestore_doc_id AS id,
+                  school_id AS schoolId,
+                  org_name AS orgName,
+                  governing_body AS governingBody,
+                  location,
+                  party_upper AS partyUpper,
+                  party_cell AS partyCell,
+                  updated_at AS updatedAt
+                FROM licenses
+                WHERE firestore_doc_id = ?
+                LIMIT 1
+              `,
+              [licenseId]
+            );
+
+          return {
+            licenseId,
+            schoolId:
+              license.school_id || null,
+            profile:
+              updatedRows[0] || null,
+          };
+        }
+      );
+
+      return res.json({
+        ok: true,
+        service: serviceName,
+        actedBy:
+          req.adminUser?.email || null,
+        ...result,
+      });
+    } catch (error) {
+      return sendMysqlAdminCommandError(
+        res,
+        serviceName,
+        error
+      );
+    }
+  }
+);
 app.patch(
   [
     '/api/admin/mysql/licenses/:licenseId/status',
@@ -2917,6 +3366,127 @@ app.use((req, res, next) => {
   sendFrontendIndex(req, res);
 });
 
+async function sendAdminLicenseRequestEmail(requestInfo) {
+  try {
+    if (!nodemailer) {
+      console.log('[MAIL] Skip license request notification: nodemailer is not available.');
+      return;
+    }
+
+    const smtpHost = process.env.SMTP_HOST;
+    const smtpPort = Number(process.env.SMTP_PORT || 587);
+    const smtpUser = process.env.SMTP_USER;
+    const smtpPass = process.env.SMTP_PASS;
+    const adminEmail = process.env.ADMIN_NOTIFY_EMAIL;
+    const fromEmail = process.env.SMTP_FROM || smtpUser;
+
+    if (!smtpHost || !smtpUser || !smtpPass || !adminEmail || !fromEmail) {
+      console.log('[MAIL] Skip license request notification: SMTP env is not fully configured.');
+      return;
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass,
+      },
+    });
+
+    const requestTypeLabel =
+      requestInfo.requestType === 'NEW_SCHOOL'
+        ? 'Trường mới'
+        : requestInfo.requestType === 'EXISTING_SCHOOL'
+          ? 'Thiết bị mới'
+          : requestInfo.requestType || '(không xác định)';
+
+    const subject = '[DocFormatPro] Có yêu cầu cấp phép mới chờ duyệt';
+
+    const text = [
+      'Có yêu cầu cấp phép mới vừa được gửi lên hệ thống DocFormatPro.',
+      '',
+      `Loại yêu cầu: ${requestTypeLabel}`,
+      `Đơn vị: ${requestInfo.orgName || '(chưa có)'}`,
+      `School ID: ${requestInfo.schoolId || requestInfo.requestedSchoolId || '(chưa có)'}`,
+      `Thiết bị: ${requestInfo.deviceName || '(chưa có)'}`,
+      `Mã thiết bị: ${requestInfo.deviceId || '(chưa có)'}`,
+      `Người dùng: ${requestInfo.userName || '(chưa có)'}`,
+      `Vai trò: ${requestInfo.userRole || '(chưa có)'}`,
+      `Số điện thoại: ${requestInfo.phone || '(chưa có)'}`,
+      `Mã yêu cầu: ${requestInfo.requestId || '(chưa có)'}`,
+      `Thời gian: ${new Date().toLocaleString('vi-VN')}`,
+    ].join('\n');
+
+    await transporter.sendMail({
+      from: fromEmail,
+      to: adminEmail,
+      subject,
+      text,
+    });
+
+    console.log('[MAIL] Admin license request notification sent.');
+  } catch (mailError) {
+    console.error('[MAIL] Failed to send admin license request notification:', mailError.message);
+  }
+}
+
+async function sendAdminTrialRegistrationEmail(trial) {
+  try {
+    const smtpHost = process.env.SMTP_HOST;
+    const smtpPort = Number(process.env.SMTP_PORT || 587);
+    const smtpUser = process.env.SMTP_USER;
+    const smtpPass = process.env.SMTP_PASS;
+    const adminEmail = process.env.ADMIN_NOTIFY_EMAIL;
+    const fromEmail = process.env.SMTP_FROM || smtpUser;
+
+    if (!nodemailer) {
+  console.log('[MAIL] Skip admin notification: nodemailer is not available.');
+  return;
+}
+
+if (!smtpHost || !smtpUser || !smtpPass || !adminEmail || !fromEmail) {
+  console.log('[MAIL] Skip admin notification: SMTP env is not fully configured.');
+  return;
+}
+
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass,
+      },
+    });
+
+    const subject = '[DocFormatPro] Có đăng ký dùng thử / bản quyền mới';
+
+    const text = [
+      'Có người dùng vừa hoàn thành đăng ký dùng thử / bản quyền trên DocFormatPro.',
+      '',
+      `Họ tên / người liên hệ: ${trial.contactName || '(chưa nhập)'}`,
+      `Số điện thoại: ${trial.phone || '(chưa nhập)'}`,
+      `Zalo: ${trial.zalo || '(chưa nhập)'}`,
+      `Tên trường / đơn vị: ${trial.schoolName || '(chưa nhập)'}`,
+      `Mã đăng ký: ${trial.registrationKey || '(chưa có)'}`,
+      `Số lượt dùng thử: ${trial.trialLimit}`,
+      `Thời gian: ${new Date().toLocaleString('vi-VN')}`,
+    ].join('\n');
+
+    await transporter.sendMail({
+      from: fromEmail,
+      to: adminEmail,
+      subject,
+      text,
+    });
+
+    console.log('[MAIL] Admin trial registration notification sent.');
+  } catch (mailError) {
+    console.error('[MAIL] Failed to send admin trial registration notification:', mailError.message);
+  }
+}
 // --- Route POST trial_registrations ---
 app.post('/VB/api/trial_registrations', async (req, res) => {
   try {
@@ -2974,7 +3544,14 @@ app.post('/VB/api/trial_registrations', async (req, res) => {
         status,
       ]
     );
-
+        void sendAdminTrialRegistrationEmail({
+        phone,
+        zalo,
+        contactName,
+        schoolName,
+        registrationKey,
+        trialLimit,
+  });
     return res.json({
       ok: true,
       message: 'Đăng ký dùng thử / bản quyền thành công.',

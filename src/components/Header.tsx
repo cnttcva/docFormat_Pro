@@ -1,7 +1,19 @@
 // File: src/components/Header.tsx
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { OrgInfo } from '../types';
-import { ShieldCheck, BookOpen, Bot, LockKeyhole, Clock, Settings } from 'lucide-react';
+import {
+  ShieldCheck,
+  BookOpen,
+  FileText,
+  LockKeyhole,
+  Clock,
+  Settings,
+  Building2,
+  Monitor,
+  ChevronDown,
+    Bot,
+} from 'lucide-react';
 
 interface HeaderProps {
   orgInfo?: OrgInfo;
@@ -10,67 +22,154 @@ interface HeaderProps {
   setShowGuide: (show: boolean) => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ 
-  orgInfo, 
-  authStatus, 
-  setShowOrgSettings, 
-  setShowGuide 
+export const Header: React.FC<HeaderProps> = ({
+  orgInfo,
+  authStatus,
+  setShowOrgSettings,
+  setShowGuide,
 }) => {
   return (
     <>
-      {/* Top Banner: Trạng thái Bản quyền */}
-      <div className="relative z-20 bg-slate-900 text-white py-2 shadow-md px-4 border-b border-indigo-500/30">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
-            <div className="hidden sm:block w-24"></div>
-            <div className="flex items-center justify-center gap-2 text-[11px] font-bold tracking-[0.2em] uppercase flex-1">
-              <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(167,139,250,0.8)]"></span>
-              {orgInfo?.orgName || "CHƯA ĐĂNG KÝ BẢN QUYỀN"}
-              <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,211,238,0.8)]"></span>
-            </div>
-            
-            <button 
-                onClick={() => setShowOrgSettings(true)}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-[11px] transition-all font-bold border whitespace-nowrap tracking-wide
-                  ${authStatus === 'REGISTERED' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20' : 
-                    authStatus === 'PENDING' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20' : 
-                    'bg-rose-500/10 text-rose-400 border-rose-500/30 hover:bg-rose-500/20'}`}
-            >
-                {authStatus === 'REGISTERED' && <><LockKeyhole className="w-3.5 h-3.5" /> <span>License Active</span></>}
-                {authStatus === 'PENDING' && <><Clock className="w-3.5 h-3.5 animate-pulse" /> <span>Đang chờ cấp quyền...</span></>}
-                {authStatus === 'UNREGISTERED' && <><Settings className="w-3.5 h-3.5" /> <span>Đăng ký bản quyền</span></>}
-            </button>
+      <div className="relative z-30 border-b border-blue-950/60 bg-[#062b5c] text-white">
+        <div className="mx-auto flex min-h-11 max-w-7xl items-center justify-between gap-4 px-4 py-2 sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Building2 className="h-4 w-4 shrink-0 text-blue-200" />
+
+            <span className="truncate text-xs font-extrabold uppercase tracking-[0.08em] sm:text-sm">
+              {orgInfo?.orgName || 'CHƯA ĐĂNG KÝ BẢN QUYỀN'}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowOrgSettings(true)}
+            className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-bold transition-colors ${
+              authStatus === 'REGISTERED'
+                ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                : authStatus === 'PENDING'
+                  ? 'border-amber-400/30 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25'
+                  : 'border-rose-400/30 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25'
+            }`}
+          >
+            {authStatus === 'REGISTERED' && (
+              <>
+                <LockKeyhole className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">
+                  Bản quyền đang hoạt động
+                </span>
+                <span className="sm:hidden">Đã kích hoạt</span>
+              </>
+            )}
+
+            {authStatus === 'PENDING' && (
+              <>
+                <Clock className="h-3.5 w-3.5 animate-pulse" />
+                <span className="hidden sm:inline">
+                  Đang chờ cấp quyền
+                </span>
+                <span className="sm:hidden">Đang chờ</span>
+              </>
+            )}
+
+            {authStatus === 'UNREGISTERED' && (
+              <>
+                <Settings className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">
+                  Đăng ký bản quyền
+                </span>
+                <span className="sm:hidden">Đăng ký</span>
+              </>
+            )}
+          </button>
         </div>
       </div>
 
-      {/* Main Header: Logo và Công cụ */}
-      <header className="relative z-30 bg-white/70 backdrop-blur-xl border-b border-white/50 sticky top-0 shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-20 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3.5 group cursor-pointer">
-            <div className="relative">
-              <div className="absolute inset-0 bg-gradient-to-tr from-violet-600 to-cyan-500 rounded-xl blur-sm opacity-50 group-hover:opacity-100 transition-opacity duration-500"></div>
-              <div className="relative bg-gradient-to-br from-slate-900 to-slate-800 p-2.5 rounded-xl text-white shadow-xl flex items-center justify-center">
-                <Bot className="w-6 h-6 text-cyan-300" />
-              </div>
+      <header className="sticky top-0 z-40 border-b border-slate-200/80 bg-white/95 shadow-sm backdrop-blur-xl">
+        <div className="mx-auto flex h-[72px] max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+          <div className="flex shrink-0 items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-700 text-white shadow-md shadow-blue-700/20">
+              <FileText className="h-6 w-6" />
             </div>
+
             <div>
-              <h1 className="text-2xl font-black text-slate-800 tracking-tight leading-none flex items-center gap-1.5">
-                DocFormat <span className="bg-clip-text text-transparent bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500">Pro</span>
+              <h1 className="flex items-center gap-1 text-xl font-black leading-none tracking-tight text-slate-900 sm:text-2xl">
+                DocFormat
+                <span className="text-blue-700">Pro</span>
               </h1>
-              <p className="text-[10px] font-bold text-indigo-500/70 uppercase tracking-widest mt-1">AI Document Engine</p>
+
+              <p className="mt-1 text-[9px] font-bold uppercase tracking-[0.18em] text-slate-400 sm:text-[10px]">
+                AI Document Engine
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="hidden md:flex items-center gap-2 text-xs font-semibold text-slate-600 bg-white/80 px-4 py-2.5 rounded-full border border-slate-200 shadow-sm backdrop-blur-md">
-              <ShieldCheck className="w-4 h-4 text-emerald-500" />
-              Client-Side Processing
-            </div>
-            <button 
-              onClick={() => setShowGuide(true)}
-              className="flex items-center gap-2 text-xs font-bold text-indigo-700 bg-indigo-50/80 px-5 py-2.5 rounded-full border border-indigo-100 shadow-sm hover:shadow-md hover:bg-indigo-100 hover:scale-105 transition-all duration-300 backdrop-blur-md"
+
+          <nav className="hidden items-center gap-8 lg:flex">
+            <span className="relative py-6 text-sm font-extrabold text-blue-700">
+              Trang chủ
+              <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-blue-700" />
+            </span>
+
+            <Link
+              to="/ai-assistant"
+              className="inline-flex items-center gap-2 py-6 text-sm font-semibold text-slate-600 transition-colors hover:text-blue-700"
             >
-              <BookOpen className="w-4 h-4" />
-              <span className="hidden sm:inline">Hướng dẫn & Mẹo</span>
-              <span className="sm:hidden">HDSD</span>
+              <Bot className="h-4 w-4" />
+              Trợ lý AI
+            </Link>
+
+            <button
+              type="button"
+              onClick={() => setShowGuide(true)}
+              className="py-6 text-sm font-semibold text-slate-600 transition-colors hover:text-blue-700"
+            >
+              Hướng dẫn sử dụng
+            </button>
+
+            <span className="py-6 text-sm font-semibold text-slate-500">
+              Lịch sử xử lý
+            </span>
+
+            <span className="py-6 text-sm font-semibold text-slate-500">
+              Trợ giúp
+            </span>
+          </nav>
+
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-600 shadow-sm md:flex">
+              <Monitor className="h-4 w-4 text-blue-700" />
+              Xử lý trên thiết bị
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowOrgSettings(true)}
+              className="flex max-w-[190px] items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-50 sm:px-4"
+            >
+              <Building2 className="h-4 w-4 shrink-0 text-blue-800" />
+
+              <span className="hidden truncate sm:block">
+                {orgInfo?.orgName || 'Đơn vị sử dụng'}
+              </span>
+
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+            </button>
+
+            <Link
+              to="/ai-assistant"
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-indigo-100 bg-indigo-50 text-indigo-700 transition-colors hover:bg-indigo-100 lg:hidden"
+              aria-label="Mở Trợ lý Văn phòng AI"
+              title="Trợ lý Văn phòng AI"
+            >
+              <Bot className="h-4.5 w-4.5" />
+            </Link>
+
+            <button
+              type="button"
+              onClick={() => setShowGuide(true)}
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 text-blue-700 transition-colors hover:bg-blue-100 lg:hidden"
+              aria-label="Mở hướng dẫn sử dụng"
+            >
+              <BookOpen className="h-4.5 w-4.5" />
             </button>
           </div>
         </div>
